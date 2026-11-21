@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import Link from "next/link";
+import { I18nProvider } from "@/components/I18nProvider";
+import { SiteFooter, SiteHeader } from "@/components/SiteHeader";
+import { HIGH_CONTRAST_VALUE, LARGE_TEXT_VALUE } from "@/lib/i18n/preferences";
+import { getPreferences } from "@/lib/i18n/server";
 import "./globals.css";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
@@ -11,46 +14,34 @@ export const metadata: Metadata = {
   description: "Report civic issues in any language. AI routes them to the right department.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+/**
+ * Root layout: skip link, main navigation, page content and footer, shared by
+ * every route.
+ *
+ * The visitor's language and display preferences are read from cookies here,
+ * on the server, so the first HTML already carries the right `<html lang>`,
+ * the high-contrast and larger-text attributes, and text in the chosen
+ * language. The browser then hydrates from the same values, so nothing
+ * flashes or mismatches.
+ */
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  const { lang, highContrast, largeText } = await getPreferences();
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+    <html
+      lang={lang}
+      data-contrast={highContrast ? HIGH_CONTRAST_VALUE : undefined}
+      data-text={largeText ? LARGE_TEXT_VALUE : undefined}
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+    >
       <body className="min-h-full flex flex-col">
-        {/* [ACCESSIBILITY] Keyboard users can jump straight past the navigation. */}
-        <a
-          href="#main"
-          className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-[2000] focus:rounded focus:bg-white focus:px-3 focus:py-2"
-        >
-          Skip to content
-        </a>
-        <header className="sticky top-0 z-[1100] border-b border-slate-200 bg-white/95 backdrop-blur">
-          <nav aria-label="Main" className="mx-auto flex max-w-6xl items-center gap-1 px-4 py-3">
-            <Link href="/" className="mr-auto flex items-center gap-2 font-semibold text-slate-900">
-              <span aria-hidden className="grid h-7 w-7 place-items-center rounded-md bg-emerald-600 text-sm text-white">
-                CR
-              </span>
-              CivicResolve
-            </Link>
-            {/* The three views of the end-to-end workflow: citizen → public tracking → admin. */}
-            <NavLink href="/">Report</NavLink>
-            <NavLink href="/track">Track</NavLink>
-            <NavLink href="/staff">Staff</NavLink>
-          </nav>
-        </header>
-        <main id="main" className="mx-auto w-full max-w-6xl flex-1 px-4 py-6">
-          {children}
-        </main>
-        <footer className="border-t border-slate-200 py-4 text-center text-xs text-slate-600">
-          CivicResolve · classification powered by Google Gemini
-        </footer>
+        <I18nProvider initialLang={lang}>
+          <SiteHeader initialDisplay={{ highContrast, largeText }} />
+          <main id="main" className="mx-auto w-full max-w-6xl flex-1 px-4 py-6">
+            {children}
+          </main>
+          <SiteFooter />
+        </I18nProvider>
       </body>
     </html>
-  );
-}
-
-function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <Link href={href} className="rounded-md px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100">
-      {children}
-    </Link>
   );
 }

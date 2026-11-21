@@ -15,7 +15,97 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  /* Geist covers Latin only; Tamil and Hindi fall through to the device's own fonts. */
+  font-family:
+    var(--font-geist-sans), "Noto Sans Tamil", "Noto Sans Devanagari", system-ui, Arial, Helvetica, sans-serif;
+}
+
+/* Tamil and Devanagari join letters into clusters, so extra letter-spacing
+   (used on small uppercase labels) would pull words apart; they also need a
+   little more line height than Latin text. */
+:lang(ta),
+:lang(hi) {
+  letter-spacing: normal;
+}
+:lang(ta) body,
+:lang(hi) body {
+  line-height: 1.6;
+}
+
+/* "Larger text" setting: Tailwind sizes are in rem, so raising the root size
+   scales text, padding and controls together. */
+html[data-text="large"] {
+  font-size: 122%;
+}
+
+/* "High contrast" setting. Tailwind colours are CSS variables, so the palette
+   is remapped in one place: grey text becomes near-black, hairline borders and
+   rings become dark lines, and filled buttons get darker so white text on them
+   passes AAA contrast. Light tinted backgrounds (the 50 and 100 shades) are
+   kept, so badges and notices still carry their colour as well as their text. */
+html[data-contrast="high"] {
+  --background: #ffffff;
+  --foreground: #000000;
+  /* text greys */
+  --color-slate-500: #1e293b;
+  --color-slate-600: #0f172a;
+  --color-slate-700: #0f172a;
+  --color-slate-800: #000000;
+  --color-slate-900: #000000;
+  /* borders, rings and dividers */
+  --color-slate-200: #475569;
+  --color-slate-300: #1e293b;
+  --color-emerald-200: #065f46;
+  --color-emerald-300: #065f46;
+  --color-red-200: #991b1b;
+  --color-red-300: #991b1b;
+  --color-amber-200: #78350f;
+  --color-orange-300: #7c2d12;
+  --color-yellow-300: #713f12;
+  --color-green-300: #14532d;
+  --color-blue-300: #1e3a8a;
+  /* filled buttons, links and coloured text */
+  --color-emerald-600: #065f46;
+  --color-emerald-700: #064e3b;
+  --color-emerald-800: #022c22;
+  --color-rose-600: #9f1239;
+  --color-rose-700: #881337;
+  --color-red-700: #7f1d1d;
+  --color-red-800: #7f1d1d;
+  --color-blue-500: #1e3a8a;
+  --color-blue-700: #1e3a8a;
+  --color-blue-800: #172554;
+  --color-amber-800: #451a03;
+  --color-orange-800: #431407;
+  --color-green-800: #052e16;
+}
+/* The one place the 200 grey is a background, not a line: steps not yet reached, and loading skeletons. */
+html[data-contrast="high"] .bg-slate-200 {
+  background-color: #e2e8f0;
+}
+html[data-contrast="high"] ::placeholder {
+  color: #475569;
+  opacity: 1;
+}
+html[data-contrast="high"] :focus-visible {
+  outline: 4px solid #000000;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 8px #fde047;
+}
+/* Map: a dark outline around each marker and crisper tiles; popups get a visible border. */
+html[data-contrast="high"] .leaflet-interactive {
+  stroke: #000000;
+}
+html[data-contrast="high"] .leaflet-tile-pane {
+  filter: contrast(1.25);
+}
+html[data-contrast="high"] .leaflet-popup-content-wrapper,
+html[data-contrast="high"] .leaflet-bar {
+  border: 2px solid #000000;
+}
+html[data-contrast="high"] .leaflet-container a {
+  color: #1e3a8a;
+  text-decoration: underline;
 }
 
 /* Accessibility: a strong, always-visible focus ring for keyboard users
