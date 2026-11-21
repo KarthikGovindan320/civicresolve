@@ -55,9 +55,8 @@ const UpdateAction = z.object({
   status: z.enum(STATUSES).optional().catch(undefined),
   category: z.enum(CATEGORIES).optional().catch(undefined),
   priority: z.enum(PRIORITIES).optional().catch(undefined),
-  // Kept as raw text: naming any department (even an unknown one) tells the
-  // update action not to re-route automatically when the category changes.
-  department: z.string().optional().catch(undefined),
+  // Naming a department pins it; otherwise a category change re-routes automatically.
+  department: z.enum(DEPARTMENTS).optional().catch(undefined),
   note: staffNote,
 });
 

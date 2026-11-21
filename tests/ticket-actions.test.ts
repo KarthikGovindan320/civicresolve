@@ -95,7 +95,7 @@ describe("parseTicketAction (PATCH body schema)", () => {
       status: undefined,
       category: undefined,
       priority: undefined,
-      department: "Parks",
+      department: undefined,
       note: "",
     });
   });
@@ -190,6 +190,35 @@ describe("acknowledgeTicket", () => {
     );
     expect(accepted.expectedFixDate).toBeNull();
     expect(notice?.text).toBe("City Admin accepted this issue.");
+  });
+});
+
+describe("acknowledgeTicket guards", () => {
+  it("only accepts a newly reported, reviewed issue", () => {
+    for (const current of [ticket({ status: "In Progress" }), ticket({ status: "Resolved", resolvedAt: NOW })]) {
+      expect(acknowledgeTicket(current, { action: "acknowledge", expectedFixDate: null, note: "" }, as(ROADS))).toEqual(
+        { ok: false, status: 400, error: "Only a newly reported issue can be accepted." },
+      );
+    }
+    expect(
+      acknowledgeTicket(
+        ticket({ verification: "unverified" }),
+        { action: "acknowledge", expectedFixDate: null, note: "" },
+        as(ADMIN),
+      ),
+    ).toEqual({ ok: false, status: 400, error: "This report is waiting for the city admin's review." });
+  });
+
+  it("records an audit event for the acceptance", () => {
+    const result = acknowledgeTicket(
+      ticket(),
+      { action: "acknowledge", expectedFixDate: "2026-11-24", note: "" },
+      as(ROADS),
+    );
+    expect(result.ok && result.audit).toEqual({
+      event: "ticket_acknowledged",
+      fields: { id: "CR-2001", by: "Public Works (Roads)", expectedFixDate: "2026-11-24" },
+    });
   });
 });
 
@@ -299,6 +328,30 @@ describe("updateTicket (admin overrides)", () => {
     expect(reopened.adminNotes).toEqual(["Not done"]);
   });
 
+  it("moving out of Resolved clears the proof of fix and the citizen's verdict", () => {
+    const { ticket: reopened } = succeeded(
+      updateTicket(
+        ticket({
+          status: "Resolved",
+          resolvedAt: NOW,
+          citizenConfirmation: "confirmed",
+          resolution: { note: "Done", hasPhoto: true, aiVerdict: "fixed", aiReason: "Patched", by: "Roads", at: NOW },
+        }),
+        { action: "update", status: "In Progress", note: "" },
+        as(ADMIN),
+      ),
+    );
+    expect(reopened).toMatchObject({ status: "In Progress", resolution: null, citizenConfirmation: null });
+  });
+
+  it("logs which fields an override changed", () => {
+    const result = updateTicket(ticket(), { action: "update", category: "Garbage", note: "" }, as(ADMIN));
+    expect(result.ok && result.audit).toEqual({
+      event: "ticket_updated",
+      fields: { id: "CR-2001", changed: ["category", "department"] },
+    });
+  });
+
   it("an unchanged status with a note only records the note", () => {
     const { ticket: noted, notice } = succeeded(
       updateTicket(ticket(), { action: "update", status: "Reported", note: "Checked" }, as(ADMIN)),
@@ -329,11 +382,14 @@ describe("updateTicket (admin overrides)", () => {
     ).ticket;
     expect(pinned).toMatchObject({ category: "Garbage", department: "Water Supply" });
 
-    // An unknown department is ignored, but still means "do not re-route automatically".
-    const unknown = succeeded(
-      updateTicket(ticket(), { action: "update", category: "Garbage", department: "Parks", note: "" }, as(ADMIN)),
-    ).ticket;
-    expect(unknown).toMatchObject({ category: "Garbage", department: "Public Works (Roads)" });
+    // An unknown department is dropped when the body is parsed, so the category's own department applies.
+    const parsed = parseTicketAction({ action: "update", category: "Garbage", department: "Parks" });
+    expect(parsed).toMatchObject({ department: undefined });
+    if (parsed?.action !== "update") throw new Error("expected an update action");
+    expect(succeeded(updateTicket(ticket(), parsed, as(ADMIN))).ticket).toMatchObject({
+      category: "Garbage",
+      department: "Sanitation",
+    });
   });
 
   it("a priority override resets the base priority too", () => {

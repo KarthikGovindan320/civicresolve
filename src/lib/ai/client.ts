@@ -5,7 +5,7 @@
 // the request is made, so that every AI feature gets the same resilience:
 // structured JSON output, a per-attempt timeout and a fallback to the next model.
 // =============================================================================
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel, type Part } from "@google/genai";
 import { describeError, log } from "../log";
 
 const DEFAULT_PRIMARY_MODEL = "gemini-3.6-flash";
@@ -72,7 +72,7 @@ export const geminiEnabled = () => Boolean(process.env.GEMINI_API_KEY);
  * Throws when no model answers within the total budget.
  */
 export async function generateJson(
-  parts: object[],
+  parts: Part[],
   config: JsonRequestConfig,
   models: string[] = SMART_MODELS,
 ): Promise<{ json: unknown; model: string }> {

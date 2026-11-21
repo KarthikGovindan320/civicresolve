@@ -220,9 +220,6 @@ export interface Classification {
   transcript: string | null;
 }
 
-// Promised fix dates are stored as plain "YYYY-MM-DD" but shown as "24 Nov 2026",
-// the same style as every other date in the app (found by clicking through the app in a real
-// browser: raw ISO dates read oddly, especially to screen-reader users).
 /** Maximum lengths of citizen and staff input. Shared by the API (server-side truncation) and the
  *  form fields (maxLength), so the two can never disagree. */
 export const LIMITS = {
@@ -236,6 +233,10 @@ export const LIMITS = {
   search: 120,
 } as const;
 
+/**
+ * Promised fix dates are stored as plain "YYYY-MM-DD" but shown as "24 Nov 2026", the same
+ * style as every other date in the app (raw ISO dates read oddly, especially to screen readers).
+ */
 export const fmtDay = (isoDay: string) =>
   new Date(`${isoDay}T00:00:00Z`).toLocaleDateString("en-IN", { dateStyle: "medium", timeZone: "UTC" });
 

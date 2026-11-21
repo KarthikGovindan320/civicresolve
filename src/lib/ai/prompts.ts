@@ -9,10 +9,11 @@
 // into the instructions, which limits prompt injection through complaint text.
 // =============================================================================
 import { z } from "zod";
-import { CATEGORIES, DEPARTMENTS, PRIORITIES, type Ticket } from "../types";
+import { CATEGORIES, CATEGORY_DEPARTMENT, DEPARTMENTS, PRIORITIES, type Category, type Ticket } from "../types";
 
 /** A nearby open ticket offered to the model as a possible duplicate. */
-export type DuplicateCandidate = Ticket & { distance: number };
+/** What the duplicate check needs to know about a nearby open ticket. */
+export type DuplicateCandidate = Pick<Ticket, "id" | "englishSummary"> & { distance: number };
 
 // ---- Classification ---------------------------------------------------------
 
@@ -64,6 +65,11 @@ export const CLASSIFICATION_JSON_SCHEMA = {
   ],
 };
 
+/** The routing table, written out for the model, so its department choice follows the city's own rules. */
+const ROUTING_GUIDE = Object.entries(CATEGORY_DEPARTMENT)
+  .map(([category, department]) => `- ${category} → ${department}`)
+  .join("\n");
+
 /**
  * System prompt for triage. The priority rubric is spelled out so urgency is
  * judged consistently by public impact (danger to life > injury risk >
@@ -77,7 +83,9 @@ Priority guide:
 - High: likely to cause injury or affects many people (large potholes on main roads, many streetlights out, major leaks).
 - Medium: nuisance or health concern without immediate danger (overflowing bins, single streetlight out, small leak).
 - Low: cosmetic or minor (cracked footpath slab, flickering light, littering).
-Department: pick the one responsible for fixing the issue.
+Department: pick the one responsible for fixing the issue. The usual owner of each category:
+${ROUTING_GUIDE}
+Choose another department only when the evidence clearly shows it is responsible.
 If the photo or voice contradicts the text, trust the evidence and say so in priorityReason.`;
 
 /** The user turn for classification: the report as labelled data, plus which attachments follow. */
@@ -114,7 +122,7 @@ export function duplicateJsonSchema(candidateIds: string[]) {
 
 /** Asks whether the new report is the same physical problem as one of the nearby candidates. */
 export function duplicatePrompt(
-  incoming: { summary: string; category: string },
+  incoming: { summary: string; category: Category },
   candidates: DuplicateCandidate[],
 ): string {
   const candidateList = candidates
@@ -127,6 +135,9 @@ export function duplicatePrompt(
 
 export const TRANSLATION_SYSTEM_PROMPT =
   "Detect the message's language and translate it into the target language. Keep it faithful, plain and polite. If it is already in the target language, return translation = null.";
+
+/** Runtime validation of the translation answer (the JSON Schema below only guides the model). */
+export const TranslationSchema = z.object({ detectedLanguage: z.string(), translation: z.string().nullable() });
 
 export const TRANSLATION_JSON_SCHEMA = {
   type: "object",
@@ -144,17 +155,23 @@ export function translationPrompt(text: string, targetLanguage: string): string 
 
 // ---- Resolution verification ------------------------------------------------
 
+/** The verdicts a proof-of-fix check can return. */
+export const VERIFICATION_VERDICTS = ["fixed", "not_fixed", "unclear"] as const;
+
+/** Runtime validation of the proof-of-fix answer. */
+export const VerificationSchema = z.object({ verdict: z.enum(VERIFICATION_VERDICTS), reason: z.string() });
+
 export const VERIFICATION_JSON_SCHEMA = {
   type: "object",
   properties: {
-    verdict: { type: "string", enum: ["fixed", "not_fixed", "unclear"] },
+    verdict: { type: "string", enum: [...VERIFICATION_VERDICTS] },
     reason: { type: "string", description: "One sentence explaining the verdict." },
   },
   required: ["verdict", "reason"],
 };
 
 /** Asks whether the department's "after" photo shows the reported problem resolved. */
-export function verificationPrompt(issue: { summary: string; category: string; hasBeforePhoto: boolean }): string {
+export function verificationPrompt(issue: { summary: string; category: Category; hasBeforePhoto: boolean }): string {
   return `Reported issue (${issue.category}): ${issue.summary}\n${
     issue.hasBeforePhoto
       ? "Image 1 is the citizen's photo BEFORE the fix. Image 2 is the department's photo AFTER the fix."

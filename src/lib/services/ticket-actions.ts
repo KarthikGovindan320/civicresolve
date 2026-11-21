@@ -16,25 +16,8 @@
 import { isAdminRole, roleLabel } from "../auth";
 import { failure, type Result } from "../result";
 import { recomputePriority } from "../rules";
-import type {
-  AcknowledgeInput,
-  NoteInput,
-  ReviewInput,
-  TicketAction,
-  TicketActionName,
-  TransferInput,
-  UpdateInput,
-} from "../schemas";
-import {
-  CATEGORY_DEPARTMENT,
-  DEPARTMENTS,
-  fmtDay,
-  isPendingReview,
-  type Department,
-  type Resolution,
-  type Role,
-  type Ticket,
-} from "../types";
+import type { AcknowledgeInput, NoteInput, ReviewInput, TicketAction, TransferInput, UpdateInput } from "../schemas";
+import { CATEGORY_DEPARTMENT, fmtDay, isPendingReview, type Resolution, type Role, type Ticket } from "../types";
 import { appendHistory, appendMessage, systemMessage } from "../workflow";
 
 /** Who is acting and when. Passed in so the actions stay deterministic. */
@@ -65,10 +48,6 @@ function done(ticket: Ticket, notice: Notice | null = null, audit: AuditEvent | 
 /** " <note>" when there is a note, otherwise nothing: appended to a sentence that already ends in a full stop. */
 const trailingNote = (note: string) => (note ? ` ${note}` : "");
 
-function isDepartment(value: string | null | undefined): value is Department {
-  return DEPARTMENTS.includes(value as Department);
-}
-
 /**
  * The city admin screens reports that were sent without phone verification.
  * Approve → the report enters the department's normal queue. Reject → it stays
@@ -97,8 +76,15 @@ export function reviewTicket(ticket: Ticket, input: ReviewInput, { role, now }: 
   return done(rejected, { subject: "Your report was not accepted", text }, audit);
 }
 
-/** The department takes ownership and makes a public commitment (optionally with a fix date). */
+/**
+ * The department takes ownership and makes a public commitment (optionally with a fix date).
+ * Only a new report can be accepted: a resolved ticket goes back to work through the
+ * citizen's reopen or an admin status change, never by being "accepted" again, and a
+ * report waiting for review must be approved first.
+ */
 export function acknowledgeTicket(ticket: Ticket, input: AcknowledgeInput, { role, now }: ActionContext): ActionResult {
+  if (ticket.status !== "Reported") return failure(400, "Only a newly reported issue can be accepted.");
+  if (isPendingReview(ticket)) return failure(400, "This report is waiting for the city admin's review.");
   const { expectedFixDate, note } = input;
   const commitment = expectedFixDate ? ` and expects to fix it by ${fmtDay(expectedFixDate)}` : "";
   const text = `${roleLabel(role)} accepted this issue${commitment}.${trailingNote(note)}`;
@@ -106,7 +92,11 @@ export function acknowledgeTicket(ticket: Ticket, input: AcknowledgeInput, { rol
     { ...ticket, status: "In Progress", acknowledgedAt: now, expectedFixDate, resolvedAt: null },
     { status: "In Progress", at: now, note: text },
   );
-  return done(acknowledged, { subject: "Your issue is being worked on", text });
+  return done(
+    acknowledged,
+    { subject: "Your issue is being worked on", text },
+    { event: "ticket_acknowledged", fields: { id: ticket.id, by: roleLabel(role), expectedFixDate } },
+  );
 }
 
 /**
@@ -162,7 +152,9 @@ function adminResolution(note: string, by: string, now: string): Resolution {
 /**
  * Status override: each change is appended to the public history (with the
  * admin's note), and resolvedAt is stamped so the dashboard can report average
- * time-to-resolution. Without a status change, a note alone is still recorded.
+ * time-to-resolution. Moving a ticket out of Resolved also clears the proof of
+ * fix and the citizen's verdict, so a reopened ticket never shows a stale fix.
+ * Without a status change, a note alone is still recorded.
  */
 function applyStatusOverride(
   ticket: Ticket,
@@ -177,7 +169,8 @@ function applyStatusOverride(
     ...ticket,
     status,
     resolvedAt: resolved ? now : null,
-    ...(resolved ? { citizenConfirmation: "pending", resolution: adminResolution(note, roleLabel(role), now) } : {}),
+    citizenConfirmation: resolved ? "pending" : null,
+    resolution: resolved ? adminResolution(note, roleLabel(role), now) : null,
   };
   return {
     ticket: appendHistory(changed, { status, at: now, note: note || undefined }),
@@ -198,7 +191,7 @@ function applyTriageOverrides(
     corrected.category = category;
     if (department === undefined) corrected.department = CATEGORY_DEPARTMENT[category];
   }
-  if (isDepartment(department)) corrected.department = department;
+  if (department) corrected.department = department;
   if (priority) {
     corrected.basePriority = priority;
     corrected.priority = priority;
@@ -206,28 +199,47 @@ function applyTriageOverrides(
   return corrected;
 }
 
+/** Which of the admin-editable fields an override actually changed, for the audit log. */
+function changedTriageFields(before: Ticket, after: Ticket): string[] {
+  const fields = ["status", "category", "department", "priority"] as const;
+  return fields.filter((field) => before[field] !== after[field]);
+}
+
 /** Admin-only overrides: a human in the loop over the AI's decisions. */
 export function updateTicket(ticket: Ticket, input: UpdateInput, context: ActionContext): ActionResult {
   if (!isAdminRole(context.role)) return failure(403, "Only the city admin can do this.");
   const { ticket: withStatus, notice } = applyStatusOverride(ticket, input, context);
-  const withNote = input.note ? { ...withStatus, adminNotes: [...ticket.adminNotes, input.note] } : withStatus;
-  return done(applyTriageOverrides(withNote, input), notice);
+  const withNote = input.note ? { ...withStatus, adminNotes: [...withStatus.adminNotes, input.note] } : withStatus;
+  const updated = applyTriageOverrides(withNote, input);
+  return done(updated, notice, {
+    event: "ticket_updated",
+    fields: { id: ticket.id, changed: changedTriageFields(ticket, updated) },
+  });
 }
 
-type ActionHandler<Name extends TicketActionName> = (
-  ticket: Ticket,
-  input: Extract<TicketAction, { action: Name }>,
-  context: ActionContext,
-) => ActionResult;
-
-/** One handler per action name. The mapped type makes a missing or mismatched handler a compile error. */
-const ACTION_HANDLERS: { [Name in TicketActionName]: ActionHandler<Name> } = {
-  review: reviewTicket,
-  acknowledge: acknowledgeTicket,
-  transfer: transferTicket,
-  note: addTicketNote,
-  update: updateTicket,
-};
+/**
+ * Route an action to its handler. Switching on the discriminant narrows `action`
+ * to the exact input type each handler expects, and the `never` check makes a
+ * new action without a handler a compile error.
+ */
+function dispatch(ticket: Ticket, action: TicketAction, context: ActionContext): ActionResult {
+  switch (action.action) {
+    case "review":
+      return reviewTicket(ticket, action, context);
+    case "acknowledge":
+      return acknowledgeTicket(ticket, action, context);
+    case "transfer":
+      return transferTicket(ticket, action, context);
+    case "note":
+      return addTicketNote(ticket, action, context);
+    case "update":
+      return updateTicket(ticket, action, context);
+    default: {
+      const unhandled: never = action;
+      return unhandled;
+    }
+  }
+}
 
 /**
  * Apply one staff action to a ticket and return the ticket ready to be saved.
@@ -236,14 +248,13 @@ const ACTION_HANDLERS: { [Name in TicketActionName]: ActionHandler<Name> } = {
  * the reporters is also added to the ticket's conversation.
  */
 export function applyTicketAction(ticket: Ticket, action: TicketAction, context: ActionContext): ActionResult {
-  const handler = ACTION_HANDLERS[action.action] as ActionHandler<TicketActionName>;
   const current: Ticket = {
     ...ticket,
     updatedAt: context.now,
     history: [...(ticket.history ?? [])],
     messages: [...(ticket.messages ?? [])],
   };
-  const result = handler(current, action, context);
+  const result = dispatch(current, action, context);
   if (!result.ok) return result;
   const reprioritised = recomputePriority(result.ticket);
   const saved = result.notice

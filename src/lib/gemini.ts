@@ -18,6 +18,7 @@
 // holds the prompts and answer schemas, ai/fallback.ts the rule-based fallbacks.
 // =============================================================================
 
+import type { Part } from "@google/genai";
 import { FAST_MODELS, generateJson, geminiEnabled, type MediaPart } from "./ai/client";
 import { detectScriptLanguage, fallbackClassify } from "./ai/fallback";
 import {
@@ -25,9 +26,11 @@ import {
   ClassificationSchema,
   DuplicateSchema,
   TRANSLATION_JSON_SCHEMA,
+  TranslationSchema,
   TRANSLATION_SYSTEM_PROMPT,
   TRIAGE_SYSTEM_PROMPT,
   VERIFICATION_JSON_SCHEMA,
+  VerificationSchema,
   classificationPrompt,
   duplicateJsonSchema,
   duplicatePrompt,
@@ -36,7 +39,7 @@ import {
   type DuplicateCandidate,
 } from "./ai/prompts";
 import { describeError, log } from "./log";
-import type { Classification, Resolution } from "./types";
+import type { Category, Classification, Resolution } from "./types";
 
 export { geminiEnabled, type MediaPart } from "./ai/client";
 export { fallbackClassify } from "./ai/fallback";
@@ -53,9 +56,12 @@ const MAX_AI_REASON_CHARS = 300;
 const MAX_LANGUAGE_CODE_CHARS = 8;
 const MAX_TRANSLATION_CHARS = 2000;
 
+/** Shown when the proof-of-fix check could not give a verdict; the citizen still decides. */
+const UNVERIFIED_FIX_REASON = "AI check failed; awaiting citizen confirmation.";
+
 const ASCII_ONLY = /^[\x00-\x7F]*$/;
 
-const inlineMedia = (media: MediaPart) => ({ inlineData: media });
+const inlineMedia = (media: MediaPart): Part => ({ inlineData: media });
 
 /**
  * Classify a report: category, priority and department in one multimodal call,
@@ -74,7 +80,7 @@ export async function classifyIssue(input: {
   try {
     const prompt = classificationPrompt({ ...input, hasImage: Boolean(input.image), hasAudio: Boolean(input.audio) });
     // Multimodal evidence: photo and voice note travel inline in the same request.
-    const parts: object[] = [{ text: prompt }];
+    const parts: Part[] = [{ text: prompt }];
     if (input.image) parts.push(inlineMedia(input.image));
     if (input.audio) parts.push(inlineMedia(input.audio));
 
@@ -89,7 +95,7 @@ export async function classifyIssue(input: {
     return { result: fallbackClassify(input), source: "fallback", error: "schema mismatch" };
   } catch (error) {
     // Network error, quota, overload or timeout: the report is still accepted.
-    return { result: fallbackClassify(input), source: "fallback", error: String(error) };
+    return { result: fallbackClassify(input), source: "fallback", error: describeError(error) };
   }
 }
 
@@ -102,7 +108,7 @@ export async function classifyIssue(input: {
  * public-impact signal (reporterCount → priority boost, see rules.ts).
  */
 export async function findDuplicate(
-  incoming: { summary: string; category: string; image?: MediaPart | null },
+  incoming: { summary: string; category: Category; image?: MediaPart | null },
   candidates: DuplicateCandidate[],
 ): Promise<{ id: string | null; reason: string }> {
   if (!candidates.length) return { id: null, reason: "No nearby open tickets." };
@@ -114,7 +120,7 @@ export async function findDuplicate(
   }
   try {
     const candidateIds = candidates.map((candidate) => candidate.id);
-    const parts: object[] = [{ text: duplicatePrompt(incoming, candidates) }];
+    const parts: Part[] = [{ text: duplicatePrompt(incoming, candidates) }];
     if (incoming.image) parts.push(inlineMedia(incoming.image));
     const { json } = await generateJson(
       parts,
@@ -131,7 +137,7 @@ export async function findDuplicate(
   } catch (error) {
     // If the check fails we create a new ticket: a possible duplicate is far better than a
     // lost report. The internal error is logged, never shown to the citizen.
-    log.warn("duplicate_check_failed", { error: describeError(error instanceof Error ? error.message : error) });
+    log.warn("duplicate_check_failed", { error: describeError(error) });
     return { id: null, reason: "Duplicate check unavailable." };
   }
 }
@@ -160,15 +166,13 @@ export async function translateMessage(
       },
       FAST_MODELS,
     );
-    const answer = json as { detectedLanguage?: unknown; translation?: unknown };
-    const detectedLanguage =
-      typeof answer.detectedLanguage === "string"
-        ? answer.detectedLanguage.slice(0, MAX_LANGUAGE_CODE_CHARS)
-        : scriptLanguage;
+    // Validated like any untrusted input; a malformed answer means "no translation".
+    const answer = TranslationSchema.safeParse(json);
+    if (!answer.success) return { detectedLanguage: scriptLanguage, translation: null };
+    const detectedLanguage = answer.data.detectedLanguage.slice(0, MAX_LANGUAGE_CODE_CHARS) || scriptLanguage;
+    const translated = answer.data.translation?.trim();
     const translation =
-      typeof answer.translation === "string" && answer.translation.trim() && detectedLanguage !== targetLanguage
-        ? answer.translation.slice(0, MAX_TRANSLATION_CHARS)
-        : null;
+      translated && detectedLanguage !== targetLanguage ? translated.slice(0, MAX_TRANSLATION_CHARS) : null;
     return { detectedLanguage, translation };
   } catch (error) {
     log.warn("translate_failed", { error: describeError(error) });
@@ -184,24 +188,24 @@ export async function translateMessage(
  */
 export async function verifyResolution(input: {
   summary: string;
-  category: string;
+  category: Category;
   before?: MediaPart | null;
   after: MediaPart;
 }): Promise<{ verdict: Resolution["aiVerdict"]; reason: string }> {
   if (!geminiEnabled()) return { verdict: "unclear", reason: "AI check unavailable; awaiting citizen confirmation." };
   try {
-    const parts: object[] = [{ text: verificationPrompt({ ...input, hasBeforePhoto: Boolean(input.before) }) }];
+    const parts: Part[] = [{ text: verificationPrompt({ ...input, hasBeforePhoto: Boolean(input.before) }) }];
     if (input.before) parts.push(inlineMedia(input.before));
     parts.push(inlineMedia(input.after));
     const { json } = await generateJson(parts, {
       responseJsonSchema: VERIFICATION_JSON_SCHEMA,
       temperature: JUDGEMENT_TEMPERATURE,
     });
-    const answer = json as { verdict?: unknown; reason?: unknown };
-    const verdict = answer.verdict === "fixed" || answer.verdict === "not_fixed" ? answer.verdict : "unclear";
-    return { verdict, reason: String(answer.reason ?? "").slice(0, MAX_AI_REASON_CHARS) };
+    const answer = VerificationSchema.safeParse(json);
+    if (!answer.success) return { verdict: "unclear", reason: UNVERIFIED_FIX_REASON };
+    return { verdict: answer.data.verdict, reason: answer.data.reason.slice(0, MAX_AI_REASON_CHARS) };
   } catch (error) {
     log.warn("verify_failed", { error: describeError(error) });
-    return { verdict: "unclear", reason: "AI check failed; awaiting citizen confirmation." };
+    return { verdict: "unclear", reason: UNVERIFIED_FIX_REASON };
   }
 }
