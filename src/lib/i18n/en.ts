@@ -163,6 +163,14 @@ export const en = {
   "ticket.summary": "Summary",
   "ticket.transcript": "Transcript",
   "ticket.back": "All issues",
+  // Page and ticket not found
+  "notFound.title": "Page not found",
+  "notFound.body": "This page doesn't exist. Check the address, or go back to reporting or tracking issues.",
+  "notFound.ticketTitle": "Ticket not found",
+  "notFound.ticketBody":
+    "No public issue has this ID. Check the ID on your confirmation, or open your private link if you reported without phone verification.",
+  "notFound.toTrack": "See all issues",
+  "notFound.toReport": "Report an issue",
   "ticket.reportedAt": "reported {when}",
   "ticket.heldNotice":
     "Waiting for review: this report was sent without phone verification, so a city officer checks it before it goes to {department}. Only you can see this page.",
