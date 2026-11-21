@@ -1,17 +1,39 @@
-// [TESTING] Resolution workflow rules (src/lib/workflow.ts) and role-based
+// Resolution workflow rules (src/lib/workflow.ts) and role-based
 // access control (src/lib/auth.ts).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { canActOn, staffRole } from "@/lib/auth";
 import type { Ticket } from "@/lib/types";
-import { isOverdue, isReporter, newReporter, slaDueAt, toPrivate, toPublic, tokenFor, withAutoClose } from "@/lib/workflow";
+import {
+  isOverdue,
+  isReporter,
+  newReporter,
+  slaDueAt,
+  toPrivate,
+  toPublic,
+  tokenFor,
+  withAutoClose,
+} from "@/lib/workflow";
 
 const base = (over: Partial<Ticket> = {}): Ticket =>
   ({
-    id: "CR-1", title: "t", description: "d", originalLanguage: "en", englishSummary: "s",
-    category: "Pothole", priority: "High", priorityReason: "", department: "Public Works (Roads)",
-    status: "Reported", location: { lat: 0, lng: 0, address: "" }, reporterCount: 1,
-    createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z", resolvedAt: null,
-    adminNotes: [], hasImage: false, ...over,
+    id: "CR-1",
+    title: "t",
+    description: "d",
+    originalLanguage: "en",
+    englishSummary: "s",
+    category: "Pothole",
+    priority: "High",
+    priorityReason: "",
+    department: "Public Works (Roads)",
+    status: "Reported",
+    location: { lat: 0, lng: 0, address: "" },
+    reporterCount: 1,
+    createdAt: "2026-11-01T00:00:00.000Z",
+    updatedAt: "2026-11-01T00:00:00.000Z",
+    resolvedAt: null,
+    adminNotes: [],
+    hasImage: false,
+    ...over,
   }) as Ticket;
 
 describe("SLA deadlines", () => {

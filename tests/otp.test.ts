@@ -1,4 +1,4 @@
-// [TESTING][SECURITY] Unit tests for the stateless OTP scheme (lib/otp.ts).
+// Unit tests for the stateless OTP scheme (lib/otp.ts).
 import { describe, expect, it } from "vitest";
 import { OTP_TTL_MS, issueOtp, normalizePhone, verifyOtp } from "@/lib/otp";
 
@@ -8,7 +8,8 @@ describe("normalizePhone", () => {
       expect(normalizePhone(raw)).toBe("+919876543210");
   });
   it("rejects landlines, short numbers and junk", () => {
-    for (const raw of ["", "12345", "0416222333", "5876543210", "abcdefghij", "98765432101"]) expect(normalizePhone(raw)).toBeNull();
+    for (const raw of ["", "12345", "0416222333", "5876543210", "abcdefghij", "98765432101"])
+      expect(normalizePhone(raw)).toBeNull();
   });
 });
 

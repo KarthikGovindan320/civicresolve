@@ -1,4 +1,4 @@
-// [TESTING] End-to-end workflow through the real API route handlers:
+// End-to-end workflow through the real API route handlers:
 // citizen submits → AI/rules classify → routed to a department → department
 // accepts, messages the citizen, transfers or fixes (with an after photo) →
 // citizen confirms or reopens. Also covers validation, rate limiting,
@@ -43,7 +43,7 @@ beforeAll(async () => {
 let ipCounter = 0;
 const JPEG = new Blob([Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4])], { type: "image/jpeg" });
 // Every report is phone-verified by default (a fresh number each time, so the per-phone
-// rate limit never interferes); pass verify=false to send one WITHOUT verification.
+// rate limit never interferes); pass verify=false to send one without verification.
 let phoneCounter = 0;
 function report(fields: Record<string, string | Blob>, ip = `10.0.0.${++ipCounter}`, verify = true) {
   const fd = new FormData();
@@ -61,18 +61,30 @@ const ctx = (id: string) => ({ params: Promise.resolve({ id }) }) as never;
 const staff = (key: string) => ({ "x-staff-key": key });
 const patch = (id: string, body: object, key?: string) =>
   api.one.PATCH(
-    new Request("http://t", { method: "PATCH", body: JSON.stringify(body), headers: { "content-type": "application/json", ...(key ? staff(key) : {}) } }),
+    new Request("http://t", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json", ...(key ? staff(key) : {}) },
+    }),
     ctx(id),
   );
 const message = (id: string, text: string, headers: Record<string, string>) =>
   api.messages.POST(
-    new Request("http://t", { method: "POST", body: JSON.stringify({ text }), headers: { "content-type": "application/json", "x-forwarded-for": `20.0.0.${++ipCounter}`, ...headers } }),
+    new Request("http://t", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+      headers: { "content-type": "application/json", "x-forwarded-for": `20.0.0.${++ipCounter}`, ...headers },
+    }),
     ctx(id),
   );
 const multipart = (fields: Record<string, string | Blob>, headers: Record<string, string>) => {
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields)) fd.set(k, v);
-  return new Request("http://t", { method: "POST", body: fd, headers: { "x-forwarded-for": `30.0.0.${++ipCounter}`, ...headers } });
+  return new Request("http://t", {
+    method: "POST",
+    body: fd,
+    headers: { "x-forwarded-for": `30.0.0.${++ipCounter}`, ...headers },
+  });
 };
 const tokenOf = (link: string) => new URL(link).searchParams.get("k")!;
 
@@ -85,7 +97,9 @@ describe("citizen reporting (POST /api/tickets)", () => {
 
   it("rejects an empty report and a bad email", async () => {
     expect((await api.list.POST(report({ lat: "12.9", lng: "79.1" }))).status).toBe(400);
-    expect((await api.list.POST(report({ title: "x", lat: "12.9", lng: "79.1", email: "not-an-email" }))).status).toBe(400);
+    expect((await api.list.POST(report({ title: "x", lat: "12.9", lng: "79.1", email: "not-an-email" }))).status).toBe(
+      400,
+    );
   });
 
   it("rejects a non-image disguised as a photo", async () => {
@@ -96,7 +110,13 @@ describe("citizen reporting (POST /api/tickets)", () => {
 
   it("creates a ticket routed to the right department, with a private link", async () => {
     const res = await api.list.POST(
-      report({ title: "Live wire hanging", description: "sparking near school", lat: "12.80", lng: "79.30", email: "me@example.com" }),
+      report({
+        title: "Live wire hanging",
+        description: "sparking near school",
+        lat: "12.80",
+        lng: "79.30",
+        email: "me@example.com",
+      }),
     );
     expect(res.status).toBe(201);
     const body = await res.json();
@@ -107,14 +127,18 @@ describe("citizen reporting (POST /api/tickets)", () => {
     expect(body.ticket.department).toBe("Electricity Board (TANGEDCO)");
     expect(body.ticket.status).toBe("Reported");
     expect(body.privateLink).toMatch(/\/track\/CR-\d+\?k=/);
-    // [SECURITY] the response never echoes the email or reporter secrets
+    // The response never echoes the email or reporter secrets
     expect(JSON.stringify(body.ticket)).not.toContain("me@example.com");
     expect(body.ticket.reporters).toBeUndefined();
   });
 
   it("merges a duplicate nearby and gives the second reporter their own link", async () => {
-    const first = await (await api.list.POST(report({ title: "Pothole", description: "big pothole", lat: "12.70", lng: "79.40" }))).json();
-    const second = await (await api.list.POST(report({ title: "Pothole", description: "pothole here", lat: "12.70010", lng: "79.40" }))).json();
+    const first = await (
+      await api.list.POST(report({ title: "Pothole", description: "big pothole", lat: "12.70", lng: "79.40" }))
+    ).json();
+    const second = await (
+      await api.list.POST(report({ title: "Pothole", description: "pothole here", lat: "12.70010", lng: "79.40" }))
+    ).json();
     expect(second.merged).toBe(true);
     expect(second.ticket.id).toBe(first.ticket.id);
     expect(second.ticket.reporterCount).toBe(2);
@@ -149,7 +173,11 @@ describe("department workflow: accept → message → fix → citizen confirms",
   let id = "";
   let token = "";
   beforeAll(async () => {
-    const body = await (await api.list.POST(report({ title: "Garbage bin overflowing", description: "garbage everywhere", lat: "12.60", lng: "79.50" }))).json();
+    const body = await (
+      await api.list.POST(
+        report({ title: "Garbage bin overflowing", description: "garbage everywhere", lat: "12.60", lng: "79.50" }),
+      )
+    ).json();
     id = body.ticket.id;
     token = tokenOf(body.privateLink);
   });
@@ -176,7 +204,9 @@ describe("department workflow: accept → message → fix → citizen confirms",
 
   it("the citizen sees the conversation only with their token", async () => {
     const pub = await (await api.one.GET(new Request("http://t"), ctx(id))).json();
-    const priv = await (await api.one.GET(new Request("http://t", { headers: { "x-citizen-key": token } }), ctx(id))).json();
+    const priv = await (
+      await api.one.GET(new Request("http://t", { headers: { "x-citizen-key": token } }), ctx(id))
+    ).json();
     expect(pub.messages).toBeUndefined();
     expect(priv.messages.length).toBeGreaterThan(0);
   });
@@ -187,7 +217,9 @@ describe("department workflow: accept → message → fix → citizen confirms",
   });
 
   it("marks it fixed with proof → Resolved, awaiting citizen confirmation", async () => {
-    const t = await (await api.resolve.POST(multipart({ note: "Bin emptied", photo: JPEG }, staff("san-pass")), ctx(id))).json();
+    const t = await (
+      await api.resolve.POST(multipart({ note: "Bin emptied", photo: JPEG }, staff("san-pass")), ctx(id))
+    ).json();
     expect(t.status).toBe("Resolved");
     expect(t.citizenConfirmation).toBe("pending");
     expect(t.resolution.hasPhoto).toBe(true);
@@ -195,10 +227,19 @@ describe("department workflow: accept → message → fix → citizen confirms",
   });
 
   it("only the citizen can confirm, then it's closed", async () => {
-    expect((await api.confirm.POST(multipart({ decision: "confirm" }, { "x-citizen-key": "nope" }), ctx(id))).status).toBe(403);
-    const t = await (await api.confirm.POST(multipart({ decision: "confirm" }, { "x-citizen-key": token }), ctx(id))).json();
+    expect(
+      (await api.confirm.POST(multipart({ decision: "confirm" }, { "x-citizen-key": "nope" }), ctx(id))).status,
+    ).toBe(403);
+    const t = await (
+      await api.confirm.POST(multipart({ decision: "confirm" }, { "x-citizen-key": token }), ctx(id))
+    ).json();
     expect(t.citizenConfirmation).toBe("confirmed");
-    expect(t.history.map((h: { status: string }) => h.status)).toEqual(["Reported", "In Progress", "Resolved", "Resolved"]);
+    expect(t.history.map((h: { status: string }) => h.status)).toEqual([
+      "Reported",
+      "In Progress",
+      "Resolved",
+      "Resolved",
+    ]);
   });
 });
 
@@ -206,14 +247,24 @@ describe("transfer and reopen", () => {
   let id = "";
   let token = "";
   beforeAll(async () => {
-    const body = await (await api.list.POST(report({ title: "Pothole on main road", description: "deep pothole", lat: "12.50", lng: "79.60" }))).json();
+    const body = await (
+      await api.list.POST(
+        report({ title: "Pothole on main road", description: "deep pothole", lat: "12.50", lng: "79.60" }),
+      )
+    ).json();
     id = body.ticket.id;
     token = tokenOf(body.privateLink);
   });
 
   it("transfers need a reason and move the ticket to the other department's queue", async () => {
     expect((await patch(id, { action: "transfer", department: "Sanitation" }, "roads-pass")).status).toBe(400);
-    const t = await (await patch(id, { action: "transfer", department: "Sanitation", note: "It's debris, not a pothole" }, "roads-pass")).json();
+    const t = await (
+      await patch(
+        id,
+        { action: "transfer", department: "Sanitation", note: "It's debris, not a pothole" },
+        "roads-pass",
+      )
+    ).json();
     expect(t.department).toBe("Sanitation");
     expect(t.transfers).toBe(1);
     // the old department has lost access
@@ -223,8 +274,15 @@ describe("transfer and reopen", () => {
   it("the citizen can reopen a claimed fix, which returns it to In Progress", async () => {
     await patch(id, { action: "acknowledge" }, "san-pass");
     await api.resolve.POST(multipart({ note: "Cleared", photo: JPEG }, staff("san-pass")), ctx(id));
-    expect((await api.confirm.POST(multipart({ decision: "reopen" }, { "x-citizen-key": token }), ctx(id))).status).toBe(400); // note required
-    const t = await (await api.confirm.POST(multipart({ decision: "reopen", note: "Still there" }, { "x-citizen-key": token }), ctx(id))).json();
+    expect(
+      (await api.confirm.POST(multipart({ decision: "reopen" }, { "x-citizen-key": token }), ctx(id))).status,
+    ).toBe(400); // note required
+    const t = await (
+      await api.confirm.POST(
+        multipart({ decision: "reopen", note: "Still there" }, { "x-citizen-key": token }),
+        ctx(id),
+      )
+    ).json();
     expect(t.status).toBe("In Progress");
     expect(t.citizenConfirmation).toBe("reopened");
     expect(t.reopenCount).toBe(1);
@@ -251,14 +309,20 @@ describe("city admin overrides", () => {
 });
 
 // =============================================================================
-// [TESTING][SECURITY] Anti-spam: phone OTP verification, the separate "unverified" bucket,
+// Anti-spam: phone OTP verification, the separate "unverified" bucket,
 // and the guarantee that phone numbers never leak.
 // =============================================================================
 describe("phone verification (OTP) and the unverified review bucket", () => {
   let otpApi: typeof import("@/app/api/otp/route");
-  beforeAll(async () => { otpApi = await import("@/app/api/otp/route"); });
+  beforeAll(async () => {
+    otpApi = await import("@/app/api/otp/route");
+  });
   const otpReq = (phone: string, ip = `40.0.0.${++ipCounter}`) =>
-    new Request("http://t/api/otp", { method: "POST", body: JSON.stringify({ phone }), headers: { "content-type": "application/json", "x-forwarded-for": ip } });
+    new Request("http://t/api/otp", {
+      method: "POST",
+      body: JSON.stringify({ phone }),
+      headers: { "content-type": "application/json", "x-forwarded-for": ip },
+    });
   const loc = { lat: "12.40", lng: "79.70" };
 
   it("issues a code for a valid Indian mobile (stub mode returns it), rejects invalid numbers", async () => {
@@ -283,19 +347,43 @@ describe("phone verification (OTP) and the unverified review bucket", () => {
 
   it("never exposes the verified phone number in any response", async () => {
     const { devCode, challenge, phone } = await (await otpApi.POST(otpReq("9000012345"))).json();
-    const created = await (await api.list.POST(
-      report({ title: "Garbage bin overflowing", description: "garbage", lat: "12.31", lng: "79.81", phone, otp: devCode, otpChallenge: challenge }, undefined, false),
-    )).json();
+    const created = await (
+      await api.list.POST(
+        report(
+          {
+            title: "Garbage bin overflowing",
+            description: "garbage",
+            lat: "12.31",
+            lng: "79.81",
+            phone,
+            otp: devCode,
+            otpChallenge: challenge,
+          },
+          undefined,
+          false,
+        ),
+      )
+    ).json();
     const views = [
       JSON.stringify(created),
       JSON.stringify(await (await api.list.GET(new Request("http://t", { headers: staff("test-admin") }))).json()),
-      JSON.stringify(await (await api.one.GET(new Request("http://t", { headers: staff("san-pass") }), ctx(created.ticket.id))).json()),
+      JSON.stringify(
+        await (
+          await api.one.GET(new Request("http://t", { headers: staff("san-pass") }), ctx(created.ticket.id))
+        ).json(),
+      ),
     ];
     for (const v of views) expect(v).not.toContain("9000012345");
   });
 
   it("keeps a report sent WITHOUT verification in a separate bucket until the admin approves it", async () => {
-    const res = await api.list.POST(report({ title: "Garbage dumped", description: "garbage pile on road", lat: "12.20", lng: "79.90" }, undefined, false));
+    const res = await api.list.POST(
+      report(
+        { title: "Garbage dumped", description: "garbage pile on road", lat: "12.20", lng: "79.90" },
+        undefined,
+        false,
+      ),
+    );
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.unverified).toBe(true);
@@ -309,7 +397,10 @@ describe("phone verification (OTP) and the unverified review bucket", () => {
     expect(await ids(staff("san-pass"))).not.toContain(id);
     expect(await ids(staff("test-admin"))).toContain(id);
     expect((await api.one.GET(new Request("http://t"), ctx(id))).status).toBe(404);
-    expect((await api.one.GET(new Request("http://t", { headers: { "x-citizen-key": tokenOf(body.privateLink) } }), ctx(id))).status).toBe(200);
+    expect(
+      (await api.one.GET(new Request("http://t", { headers: { "x-citizen-key": tokenOf(body.privateLink) } }), ctx(id)))
+        .status,
+    ).toBe(200);
     expect((await patch(id, { action: "acknowledge" }, "san-pass")).status).toBe(403);
     expect((await patch(id, { action: "review", decision: "approve" }, "san-pass")).status).toBe(403);
 
@@ -321,17 +412,33 @@ describe("phone verification (OTP) and the unverified review bucket", () => {
   });
 
   it("a rejected unverified report stays stored but hidden from everyone", async () => {
-    const body = await (await api.list.POST(report({ title: "asdf", description: "test test", lat: "12.21", lng: "79.91" }, undefined, false))).json();
-    const res = await patch(body.ticket.id, { action: "review", decision: "reject", note: "Not a civic issue" }, "test-admin");
+    const body = await (
+      await api.list.POST(
+        report({ title: "asdf", description: "test test", lat: "12.21", lng: "79.91" }, undefined, false),
+      )
+    ).json();
+    const res = await patch(
+      body.ticket.id,
+      { action: "review", decision: "reject", note: "Not a civic issue" },
+      "test-admin",
+    );
     expect((await res.json()).verification).toBe("rejected");
-    const adminIds = ((await (await api.list.GET(new Request("http://t", { headers: staff("test-admin") }))).json()) as { id: string }[]).map((t) => t.id);
+    const adminIds = (
+      (await (await api.list.GET(new Request("http://t", { headers: staff("test-admin") }))).json()) as { id: string }[]
+    ).map((t) => t.id);
     expect(adminIds).not.toContain(body.ticket.id);
   });
 
   it("gives unverified reports a much tighter rate limit per device", async () => {
     const statuses: number[] = [];
     for (let i = 0; i < 4; i++)
-      statuses.push((await api.list.POST(report({ title: "spam", description: "spam", lat: "12.1", lng: "79.1" }, "8.8.8.8", false))).status);
+      statuses.push(
+        (
+          await api.list.POST(
+            report({ title: "spam", description: "spam", lat: "12.1", lng: "79.1" }, "8.8.8.8", false),
+          )
+        ).status,
+      );
     expect(statuses.slice(0, 3)).toEqual([201, 201, 201]);
     expect(statuses[3]).toBe(429);
   });

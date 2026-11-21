@@ -1,4 +1,4 @@
-// [TESTING] AI layer resilience (src/lib/gemini.ts).
+// AI layer resilience (src/lib/gemini.ts).
 // Verifies that the app keeps working when Gemini is unavailable: every report
 // still gets a valid category, department and language.
 import { beforeEach, describe, expect, it } from "vitest";
@@ -21,7 +21,7 @@ describe("rule-based fallback classifier", () => {
   ])("classifies %j as %s", (text, category) => {
     const c = fallbackClassify({ description: text });
     expect(c.category).toBe(category);
-    // BRIEF ✔ Department Recommendation is never left blank.
+    // The department recommendation is never left blank.
     expect(c.department).toBe(CATEGORY_DEPARTMENT[c.category]);
   });
 

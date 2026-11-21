@@ -1,5 +1,5 @@
 // =============================================================================
-// [TESTING] Regression tests for two bugs found by clicking through the running app in a real
+// Regression tests for two bugs found by clicking through the running app in a real
 // browser, kept here so they can never come back.
 //   1. FileStore must survive its data directory disappearing while the server runs
 //      (it used to return HTTP 500 on every write, forever).

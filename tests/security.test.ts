@@ -1,4 +1,4 @@
-// [TESTING][SECURITY] Request-level protections (src/lib/security.ts, src/lib/auth.ts).
+// Request-level protections (src/lib/security.ts, src/lib/auth.ts).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isAdmin } from "@/lib/auth";
 import { clientIp, isAllowedAudio, looksLikeAudio, rateLimit, safeEqual, sniffImageType } from "@/lib/security";
@@ -67,7 +67,7 @@ describe("admin authentication", () => {
   });
 });
 
-// [TESTING][SECURITY] Hardening added after the final self-review.
+// Hardening added after the final self-review.
 describe("hardening", () => {
   it("rate-limits by the proxy-appended (rightmost) IP, so a forged X-Forwarded-For can't dodge it", () => {
     const req = new Request("http://t", { headers: { "x-forwarded-for": "1.2.3.4, 203.0.113.9" } });

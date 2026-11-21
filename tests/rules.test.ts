@@ -1,4 +1,4 @@
-// [TESTING] Priority Detection rules (src/lib/rules.ts).
+// Priority Detection rules (src/lib/rules.ts).
 // These guard the life-safety guarantees: if any of these fail, a dangerous
 // issue could be under-prioritised.
 import { describe, expect, it } from "vitest";
@@ -68,7 +68,7 @@ describe("haversine distance", () => {
   });
 });
 
-// [TESTING] Safety rules also fire on untranslated Tamil and Hindi text (used when a report skips Gemini).
+// Safety rules also fire on untranslated Tamil and Hindi text (used when a report skips Gemini).
 describe("multilingual safety rules", () => {
   it.each([
     ["பேருந்து நிறுத்தம் அருகே மின் கம்பி அறுந்து கிடக்கிறது", "live wire"],
