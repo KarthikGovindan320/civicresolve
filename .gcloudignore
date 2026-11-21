@@ -1,0 +1,11 @@
+# [SECURITY] What `gcloud run deploy --source .` may upload to Cloud Build.
+# Secrets (.env*), local data and build output never leave the developer's machine.
+.gcloudignore
+.git
+.gitignore
+.env*
+!.env.example
+node_modules
+.next
+data
+tsconfig.tsbuildinfo
