@@ -17,8 +17,10 @@ src/lib/services/*           Use cases: report submission, staff ticket actions
         ├── src/lib/rules.ts, workflow.ts, schemas.ts   Pure domain logic (no I/O, unit-tested)
         ├── src/lib/gemini.ts + src/lib/ai/*            AI features behind one client with fallbacks
         ├── src/lib/auth.ts, security.ts, otp.ts        Access control, rate limits, file checks, OTP
-        └── src/lib/store.ts                            Persistence behind a `Store` interface
-                                                         (Firestore in production, a JSON file locally)
+        ├── src/lib/store.ts, records.ts                Persistence behind a `Store` interface
+        │                                                (Firestore in production, a JSON file locally);
+        │                                                stored records are parsed, never cast
+        └── src/lib/secrets.ts                          Signing keys, fail-closed in production
 ```
 
 Rules that keep the layers honest:
@@ -51,7 +53,8 @@ Rules that keep the layers honest:
 5. **`findDuplicateTicket`**: open tickets of the same category within 200 m are ranked by distance; the
    nearest few go to a light Gemini call that decides whether it is the same physical problem. The answer
    must be one of the candidate ids.
-6. **`mergeIntoDuplicate`** (reporter count +1, which can raise priority) or **`createTicket`**: safety rules
+6. **`mergeIntoDuplicate`** (reporter count +1, which can raise priority, applied atomically to the latest
+   version of the ticket) or **`createTicket`** (id and record written in one transaction): safety rules
    (`src/lib/rules.ts`) force Critical for live wires, open manholes and sewage overflow in English, Tamil or
    Hindi, and the SLA deadline follows from the final priority.
 7. The citizen receives a **private link** (`/track/<id>?k=<token>`). Only an HMAC salt is stored, never the
@@ -61,9 +64,14 @@ Rules that keep the layers honest:
 
 - `loadTicketForStaff` loads the ticket and checks the passcode role: a department may act only on its own,
   non-held tickets; the city admin may act on all.
+- The action is then applied inside `updateTicketAtomically` (`src/lib/http.ts`): the latest stored version is
+  read, permission is checked again against it (it may have been transferred meanwhile), and the result is
+  written in the same transaction. Resolve, confirm/reopen and messages use the same path, so two requests at
+  the same moment are applied one after the other and neither is lost.
 - The body is parsed with a zod discriminated union on `action` (`src/lib/schemas.ts`), then dispatched to one
-  pure function per action: `acknowledgeTicket`, `transferTicket`, `reviewTicket`, `addTicketNote`,
-  `updateTicket`. Each returns the updated ticket or a typed failure; the route only persists and responds.
+  pure function per action by an exhaustive `switch`: `acknowledgeTicket`, `transferTicket`, `reviewTicket`,
+  `addTicketNote`, `updateTicket`. Each enforces its own lifecycle rule (for example, only a new, reviewed
+  report can be accepted) and returns the updated ticket plus an audit event, or a typed failure.
 - Resolving needs proof: `POST /api/tickets/[id]/resolve` requires an after photo, which Gemini compares with the
   before photo (`fixed` / `not_fixed` / `unclear` plus a reason). The citizen then confirms or reopens through
   `POST /api/tickets/[id]/confirm`, authenticated by the private-link token.
@@ -83,9 +91,14 @@ the translation.
 | Department staff | Their own department's tickets and conversations | Phone numbers, emails, other departments' tickets, held reports |
 | City admin | Every department, the review bucket, overrides | Phone numbers and emails (kept only for misuse investigations) |
 
-Inputs from citizens and from the AI are both treated as untrusted: citizen text is fenced as data inside the
-prompts, every AI answer is schema-validated, and internal errors are logged without personal data and never
-returned to the browser.
+Inputs from citizens, from the AI and from the database are all treated as untrusted: citizen text is fenced
+as data inside the prompts, every AI answer is schema-validated, every stored record is parsed against the
+domain model when read, and internal errors are logged without personal data and never returned to the browser.
+
+Signing keys (private links, held-photo links, OTP challenges) come from `signingSecret()` in
+`src/lib/secrets.ts`. In production a missing key stops signing and verification altogether instead of falling
+back to a guessable value. The OTP endpoint follows the same rule: without an SMS gateway it shows the demo
+code only when `OTP_DEMO_CODES=true` is set, and otherwise answers 503.
 
 ## 4. AI design
 
@@ -93,7 +106,8 @@ returned to the browser.
   verification) try a stronger chain; short text tasks (translation, duplicate matching) use the lightest model
   first. The whole call has a 25 s budget, split across models, so a slow model cannot hang a request.
 - **Prompts live in one place** (`src/lib/ai/prompts.ts`), including the priority rubric (danger to life >
-  injury risk > nuisance > cosmetic).
+  injury risk > nuisance > cosmetic) and the routing table, generated from `CATEGORY_DEPARTMENT` so the
+  model's department choice follows the same rules as the rest of the app.
 - **Deterministic guard rails around the model**: safety rules can only raise priority to Critical, staff cannot
   lower it, and the reporter-count boost is capped at High. The AI suggests; the rules decide what must never
   go wrong.
@@ -102,7 +116,7 @@ returned to the browser.
 
 - `Store` interface with two implementations: `FirestoreStore` (Native mode, asia-south1) in production and a
   JSON file store for local development. Photos are stored apart from ticket records so lists stay small.
-- Ticket ids come from a transactional counter. Deadlines, overdue flags and auto-close are computed when a
+- Ticket ids come from a counter updated in the same transaction that writes the new ticket. Deadlines, overdue flags and auto-close are computed when a
   ticket is read, so there are no cron jobs or background workers and the service stays stateless.
 - Deployed to Cloud Run from source (Cloud Build + Artifact Registry). Secrets (Gemini key, staff passcodes,
   link secret) live in Secret Manager and are injected as environment variables; nothing secret is in the repo
