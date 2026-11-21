@@ -38,17 +38,17 @@ Try signing in as one department and opening another department's ticket: the se
 | **Problem statement alignment** | Every required feature (reporting, Gemini classification, priority detection, department recommendation, tracking dashboard, admin dashboard) **plus** a full resolution loop: accept with a promised date, anonymous translated chat, fixes accepted only with a Gemini-checked after photo, citizen confirm/reopen, SLA deadlines with escalation. |
 | **Google services** | Gemini (multimodal triage, duplicate detection, translation, before/after verification) · Cloud Run · Firestore · Cloud Build · Artifact Registry · Secret Manager · Cloud Logging · Places API (New) integrated. |
 | **Security** | Server-enforced per-department access, HMAC private links (never stored), OTP anti-spam with numbers that stay private, review queue for unverified reports, rate limits, file-signature upload checks, CSP + security headers, secrets in Secret Manager. |
-| **Testing** | 86 automated Vitest tests including the full API lifecycle, plus an end-to-end run on the live deployment with real Gemini calls. |
+| **Testing** | 183 automated Vitest tests (pure domain logic, every staff action, the full API lifecycle, security edge cases, i18n) with enforced coverage thresholds, plus an end-to-end run on the live deployment with real Gemini calls. |
 | **Accessibility** | Labelled controls, keyboard-operable map and address search (WAI-ARIA combobox), screen-reader announcements, voice reports in any language, text alongside every colour. |
 | **Efficiency** | One Gemini call per report, lightest model for short tasks, no cron jobs (deadlines computed on read), photos downscaled in the browser, small standalone container. |
-| **Code quality** | TypeScript strict, one shared domain model, schema-validated AI output, lint and typecheck clean, comments tagged by criterion. |
+| **Code quality** | Layered architecture (thin routes → services → pure domain logic → store), TypeScript strict, one shared domain model, zod-validated inputs and AI output, and an enforced quality gate: complexity and function-size limits, zero lint warnings, Prettier, duplicate-code scan, coverage thresholds, CI on every push. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). |
 
 ## Approach and logic
 Gemini does the judgement work, and deterministic rules wrap it so the outcome is predictable and safe. Every decision the app takes, and what it is based on:
 
 | Context the app sees | Decision | Where |
 |---|---|---|
-| Report text, photo and/or voice note, in any language | One multimodal Gemini call returns category, priority + a written reason, responsible department, detected language, English summary and transcript (schema-constrained JSON, validated with zod) | `src/lib/gemini.ts` → `classifyIssue()` |
+| Report text, photo and/or voice note, in any language | One multimodal Gemini call returns category, priority + a written reason, responsible department, detected language, English summary and transcript (schema-constrained JSON, validated with zod) | `src/lib/gemini.ts` → `classifyIssue()`, prompts in `src/lib/ai/prompts.ts` |
 | Gemini unavailable or returns invalid output | Keyword classifier + the category the citizen chose; the report is never lost | `gemini.ts` → `fallbackClassify()` |
 | Words like "live wire", "open manhole", "sewage overflow" (English, Tamil, Hindi) | Priority forced to **Critical**; nobody, including staff, can lower it | `src/lib/rules.ts` |
 | An open ticket of the same category within 200 m | The 5 nearest go to a light Gemini call: same physical problem? If yes, the report **joins** that ticket (reporter count +1) instead of creating a duplicate | `api/tickets/route.ts`, `gemini.ts` → `findDuplicate()` |
@@ -105,20 +105,19 @@ What each side can see: the public sees tickets without any reporter data or mes
 
 ## How this submission meets each judging parameter
 
-Every relevant line in the code is tagged with the parameter it addresses. Search the repo for these tags:
-`[PROBLEM STATEMENT ALIGNMENT]` `BRIEF ✔` `[CODE QUALITY]` `[SECURITY]` `[EFFICIENCY]` `[TESTING]` `[ACCESSIBILITY]` `[GOOGLE SERVICES]`
+The code explains *why* in plain comments next to the decisions, and every exported function has a TSDoc summary. The architecture, request flows and trust boundaries are described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ### Problem Statement Alignment
 Every expected feature is implemented and tested end to end (`tests/api.test.ts`).
 
 | Expected feature | Where |
 |---|---|
-| Citizen Issue Reporting (title, description, location, category, optional image) | `src/app/ReportForm.tsx`, `src/app/api/tickets/route.ts` (POST) |
-| AI-Powered Classification with Gemini | `src/lib/gemini.ts` → `classifyIssue()` |
+| Citizen Issue Reporting (title, description, location, category, optional image) | `src/app/ReportForm.tsx`, `src/app/api/tickets/route.ts` → `src/lib/services/report.ts` |
+| AI-Powered Classification with Gemini | `src/lib/gemini.ts` → `classifyIssue()`, prompts in `src/lib/ai/prompts.ts` |
 | Priority Detection (urgency + public impact) | `src/lib/gemini.ts` (rubric), `src/lib/rules.ts` (safety rules, reporter-count boost) |
 | Department Recommendation | `src/lib/gemini.ts` (AI), `src/lib/types.ts` → `CATEGORY_DEPARTMENT` (fallback routing) |
 | Issue Tracking Dashboard (Reported / In Progress / Resolved) | `src/app/track/page.tsx`, `src/app/track/[id]/page.tsx` |
-| Admin Dashboard (review, update statuses, manage) | `src/app/staff/page.tsx`, `src/app/staff/TicketCard.tsx`, `src/app/api/tickets/[id]/route.ts` (PATCH) |
+| Admin Dashboard (review, update statuses, manage) | `src/app/staff/`, `src/app/api/tickets/[id]/route.ts` → `src/lib/services/ticket-actions.ts` |
 | "Visualize progress towards resolution" | per-ticket progress bar and timeline, city map, live statistics (`src/components/Stats.tsx`) |
 
 Beyond the brief, to make it a real resolution process rather than a reporting form:
@@ -135,13 +134,26 @@ Beyond the brief, to make it a real resolution process rather than a reporting f
 | Multilingual **voice** reports | `src/components/VoiceRecorder.tsx` |
 | **Address search with Google Places autocomplete** (keyboard-accessible combobox; OpenStreetMap fallback) | `src/lib/places.ts`, `src/app/api/places/route.ts`, `src/components/AddressSearch.tsx` |
 | **Anti-spam phone verification (OTP)**: every report is tied to a verified mobile number that stays private; reports sent without one are kept in a separate admin review bucket | `src/lib/otp.ts`, `src/app/api/otp/route.ts`, `src/components/PhoneVerify.tsx` |
-| **AI duplicate detection and merging** · non-overridable **life-safety rules** | `src/app/api/tickets/route.ts`, `src/lib/rules.ts` |
+| **AI duplicate detection and merging** · non-overridable **life-safety rules** (English, Tamil, Hindi) | `src/lib/services/report.ts`, `src/lib/rules.ts` |
+| **Interface in English, தமிழ் and हिंदी** (citizen pages; remembered per device, rendered on the server so there is no flash of English) | `src/lib/i18n/`, `src/components/SettingsMenu.tsx` |
+| **High-contrast and larger-text modes** | `src/app/globals.css`, `src/components/SettingsMenu.tsx` |
+| **"Try a sample report"**: fills the form with realistic Vellore examples (one in Tamil, one in Hindi) so anyone can see the AI triage in one click | `src/lib/client/samples.ts`, `src/app/ReportForm.tsx` |
 
 ### Code Quality
-- TypeScript strict mode; one domain model (`src/lib/types.ts`) drives the Gemini schema, runtime validation, API validation and the UI, so values can't drift apart.
-- Clear layers: UI → API routes → domain logic (`rules.ts`, `gemini.ts`) → `Store` interface (Firestore or local file).
-- Gemini output is never trusted blindly: JSON-schema-constrained, then validated with zod.
-- ESLint clean, `tsc` clean, 86 automated tests.
+- **Layers** (details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)): route handlers in `src/app/api/` only parse, authorise and respond; use cases live in `src/lib/services/` (`report.ts`, `ticket-actions.ts`); business rules are pure functions (`rules.ts`, `workflow.ts`); persistence sits behind a `Store` interface (Firestore or a local file); AI sits behind one client with prompts, model chains and fallbacks in `src/lib/ai/`.
+- **One domain model** (`src/lib/types.ts`) drives the Gemini schema, the zod validators, the API and the UI, including the shared input `LIMITS`, so values can't drift apart.
+- **Validated boundaries:** staff actions are parsed with a zod discriminated union (`src/lib/schemas.ts`) and dispatched to one pure function per action; Gemini output is JSON-schema-constrained and then zod-validated; errors use typed `Result` values and one `fail()` helper.
+- **Small, focused units:** UI split into small components (staff actions, ticket page sections, report hooks); shared client helpers for API calls and formatting.
+- **Enforced quality gate** (`npm run check`, also run by GitHub Actions on every push):
+
+| Gate | Tool | Rule |
+|---|---|---|
+| Types | `tsc --noEmit` | TypeScript strict, no errors |
+| Lint | ESLint | zero warnings; server code: complexity ≤ 12, nesting ≤ 3, functions ≤ 60 lines, ≤ 4 params; components: complexity ≤ 15 |
+| Formatting | Prettier | whole repo |
+| Duplication | jscpd | 0 clones (≥ 8 lines) |
+| Tests | Vitest + v8 coverage | 183 tests; coverage thresholds on server code (statements 80 %, branches 74 %, functions 82 %, lines 83 %) |
+| Build | `next build` | production build in CI |
 
 ### Security
 - Role-based access control enforced server-side: a department can act only on its own tickets; only the admin can override (`src/lib/auth.ts` → `canActOn`). Constant-time passcode checks; fails closed in production when passcodes aren't configured.
@@ -155,6 +167,7 @@ Beyond the brief, to make it a real resolution process rather than a reporting f
 - Secrets only in env / **Secret Manager**, never in the repo or the browser; `server-only` guards stop database code reaching client bundles.
 - Prompt-injection mitigation: citizen text is fenced in `<report>` tags and declared as data, and every model answer (triage and duplicate matching) is restricted by a JSON schema, then validated with zod; a duplicate id is accepted only if it is one of the real nearby candidates. Internal AI errors are logged, never shown to citizens.
 - Rate limiting keys on the rightmost `X-Forwarded-For` entry (the one Cloud Run's front end appends), so a forged header can't dodge it.
+- Photos of reports held for review are served only with a server-signed link bound to that ticket and photo (or the reporter's own token). Sequential ticket ids can't be used to download them, and the response doesn't reveal that a held ticket exists.
 - Logs carry IDs and labels only, never citizens' text, photos or locations.
 
 ### Efficiency
@@ -167,21 +180,33 @@ Beyond the brief, to make it a real resolution process rather than a reporting f
 - Leaflet code-split and loaded only on map pages; standalone Next.js build for small images and fast Cloud Run cold starts.
 
 ### Testing
-`npm test` runs **86 tests** (Vitest) in about a second, with no network needed:
-- `tests/rules.test.ts`: safety rules (including Tamil and Hindi phrasings), priority boost and its cap, idempotency, distance maths.
-- `tests/gemini.test.ts`: fallback classifier, language detection, behaviour with no API key.
-- `tests/security.test.ts`: image and audio signature sniffing, rate limiter, forged `X-Forwarded-For`, constant-time auth, fail-closed production auth.
-- `tests/workflow.test.ts`: SLA deadlines, overdue, auto-close, private-link tokens, privacy of public/private views, role mapping and per-department access.
-- `tests/places.test.ts`: Google Places request shape and parsing (stubbed HTTP), field mask, input validation, graceful failure, OpenStreetMap fallback.
-- `tests/otp.test.ts`: phone normalisation, code verification, number binding, expiry and tamper resistance.
-- `tests/store.test.ts`: regression tests for bugs found by driving the live app in a real browser (a wiped data directory, date formatting).
-- `tests/api.test.ts`: the full lifecycle through the real route handlers: report → routed → other departments refused (403) → accept → two-way messaging (strangers refused) → fix refused without photo → fix with photo → only the citizen can confirm → closed; plus transfer (old department loses access), citizen reopen, admin overrides, validation, rate limiting and no private data in public responses.
+`npm test` runs **183 tests** (Vitest) in a few seconds with no network; `npm run test:coverage` enforces the coverage thresholds.
+
+| File | What it proves |
+|---|---|
+| `tests/api.test.ts` | Full lifecycle through the real route handlers: report → routed → other departments refused (403) → accept → two-way messaging (strangers refused) → fix refused without photo → fix with photo → only the citizen can confirm → closed; transfer, reopen, admin overrides, OTP and the review bucket, rate limiting, no private data in public responses |
+| `tests/ticket-actions.test.ts` | Every staff action as a pure function: accept, transfer, review, notes, admin overrides, invalid transitions |
+| `tests/report.test.ts` | Report pipeline steps: reporter verification, form parsing and limits, routing, duplicate candidate selection, merge and ticket building |
+| `tests/rules.test.ts` | Safety rules (English, Tamil, Hindi), priority boost and cap, distance maths |
+| `tests/workflow.test.ts` | SLA deadlines, overdue, auto-close, private-link tokens, public/private views, per-department access |
+| `tests/security.test.ts` | Image and audio signature checks, rate limiter, forged `X-Forwarded-For`, constant-time auth, fail-closed production auth |
+| `tests/routes-misc.test.ts` | Staff sign-in check; photo serving, including signed links for held reports |
+| `tests/http.test.ts` | Shared request/response helpers |
+| `tests/otp.test.ts` | Phone normalisation, code verification, expiry, tamper resistance |
+| `tests/places.test.ts` | Google Places request shape and parsing (stubbed HTTP), OpenStreetMap fallback |
+| `tests/gemini.test.ts` | Fallback classifier, language detection, behaviour with no API key |
+| `tests/i18n.test.ts` | Translation lookup and fallback, every language has every key, preference parsing |
+| `tests/client.test.ts` | Client helpers: API requests, formatting |
+| `tests/store.test.ts` | Regression tests for bugs found by driving the live app in a real browser |
 
 ### Accessibility
 - Every control has a real label; errors use `role="alert"`; results and recording state are announced with `aria-live`.
 - Fully keyboard-operable, including the **map** (arrow keys to move, Enter to pin); skip link; strong visible focus ring.
 - Voice input for citizens who can't type comfortably; `lang` attributes so screen readers pronounce Tamil and Hindi correctly.
 - Priority and status always shown as text, not colour alone; respects `prefers-reduced-motion`.
+- **Interface in English, Tamil and Hindi**, with `<html lang>` set accordingly; first visit follows the browser's language.
+- **High-contrast mode** (near-black text, dark borders, stronger focus ring) and **larger-text mode** (root font size 122 %, so every rem-based size scales), both remembered per device.
+- Layouts checked at 360 px phone width in all three languages; touch targets at least 44 px.
 
 ### Google Services
 | Service | Use |
@@ -202,10 +227,38 @@ Beyond the brief, to make it a real resolution process rather than a reporting f
 cp .env.example .env.local   # add GEMINI_API_KEY
 npm install
 npm run dev                  # http://localhost:3000
-npm test                     # 86 tests
+npm test                     # 183 tests
 ```
 Staff portal: http://localhost:3000/staff. Dev passcodes: `admin123` (city admin), `roads123`, `sanitation123`, `electricity123`, `water123`, `drainage123`, `general123` (departments).
 Data is stored in `./data/tickets.json` (seeded from `seed/vellore_tickets.json`). Delete `./data` to reset.
+
+| Command | What it does |
+|---|---|
+| `npm run dev` | Development server with hot reload |
+| `npm test` / `npm run test:coverage` | Test suite / with coverage thresholds |
+| `npm run check` | The full quality gate: typecheck, lint, format check, duplicate scan, tests with coverage |
+| `npm run build` | Production build (standalone server for Cloud Run) |
+
+### Project structure
+```
+src/
+  app/                 Pages (report, track, citizen ticket page, staff portal) and API routes
+    api/               Thin HTTP handlers: parse, authorise, call a service, respond
+  components/          Shared UI: map, address search, phone check, chat, settings menu, badges
+  lib/
+    services/          Use cases: report submission, staff ticket actions
+    ai/                Gemini client (model chains, time budget), prompts, keyword fallback
+    i18n/              English, Tamil and Hindi dictionaries (English is the typed source of truth)
+    client/            Browser helpers: API calls, formatting, image downscaling, sample reports
+    types.ts           Domain model shared by the API, the AI schema and the UI
+    rules.ts           Safety rules and priority logic (pure)
+    workflow.ts        SLAs, privacy views, private links, signed photo URLs (pure)
+    schemas.ts         zod validation of staff actions
+    store.ts           Store interface: Firestore or local JSON file
+    auth.ts, security.ts, otp.ts, http.ts, uploads.ts, places.ts, notify.ts, log.ts
+tests/                 183 Vitest tests
+docs/ARCHITECTURE.md   Layers, request flows, trust boundaries, AI design
+```
 
 ## Deploy to Google Cloud Run
 ```sh
@@ -232,8 +285,6 @@ Optional email: create an `smtp-url` secret (`smtps://you%40gmail.com:<app-passw
 Firestore is seeded automatically on the first request. If Firestore asks for a composite index for the duplicate-check query (`category` + `status`), the app falls back to filtering in memory until it is created.
 
 ## Roadmap
-- **Citizen mobile app** (Android first): report on the spot with the camera, GPS and voice, push notifications instead of email, offline drafts. The REST API under `src/app/api/` is already client-agnostic, so the app reuses it unchanged.
-- **Field-staff mobile app**: take the after photo at the site and close the ticket there.
 - Real SMS delivery for the OTP (the `sendSms()` hook in `src/lib/otp.ts`; needs India DLT sender/template registration).
 - Google Places autocomplete switched on in production; ward boundaries and per-ward dashboards.
 
