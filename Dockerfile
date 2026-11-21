@@ -1,4 +1,4 @@
-# [GOOGLE SERVICES][EFFICIENCY][SECURITY] Two-stage build for Google Cloud Run: the final image holds only the
+# Two-stage build for Google Cloud Run: the final image holds only the
 # standalone Next.js server (no dev dependencies, no source), so it stays small
 # and cold starts are fast. No secrets are baked in: GEMINI_API_KEY and
 # ADMIN_PASSCODE are injected as Cloud Run environment variables at deploy time.

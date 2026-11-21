@@ -1,6 +1,6 @@
 import type { NextConfig } from "next";
 
-// [SECURITY] HTTP security headers applied to every response.
+// HTTP security headers applied to every response.
 //   • Content-Security-Policy: scripts, styles and API calls may only come from
 //     our own origin; images additionally from OpenStreetMap's tile servers (the
 //     map) and blob:/data: (local photo previews). This blocks injected
@@ -38,12 +38,12 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
-  // [GOOGLE SERVICES][EFFICIENCY] Self-contained server bundle for the Google
+  // Self-contained server bundle for the Google
   // Cloud Run container: small image, fast cold starts.
   output: "standalone",
   // Bundle the seed file into the server output.
   outputFileTracingIncludes: { "/**": ["./seed/**"] },
-  // [SECURITY] Don't advertise the framework in response headers.
+  // Don't advertise the framework in response headers.
   poweredByHeader: false,
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
