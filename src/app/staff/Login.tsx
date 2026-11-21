@@ -2,14 +2,20 @@
 
 import { useState } from "react";
 
-/** Staff sign-in form. One passcode field: the passcode itself decides the role. */
-export default function Login({ onSignIn }: { onSignIn: (passcode: string) => Promise<boolean> }) {
+/**
+ * Staff sign-in form. One passcode field: the passcode itself decides the role.
+ * `onSignIn` resolves to the reason sign-in failed (shown with the field), or null.
+ */
+export default function Login({ onSignIn }: { onSignIn: (passcode: string) => Promise<string | null> }) {
   const [passcode, setPasscode] = useState("");
-  const [rejected, setRejected] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   async function signIn(event: React.FormEvent) {
     event.preventDefault();
-    setRejected(!(await onSignIn(passcode)));
+    setBusy(true);
+    setError(await onSignIn(passcode));
+    setBusy(false);
   }
 
   return (
@@ -28,14 +34,21 @@ export default function Login({ onSignIn }: { onSignIn: (passcode: string) => Pr
         onChange={(event) => setPasscode(event.target.value)}
         autoFocus
         autoComplete="current-password"
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? "pass-error" : undefined}
         className="w-full rounded-md border border-slate-300 px-3 py-2"
       />
-      {rejected && (
-        <p role="alert" className="text-sm text-red-700">
-          Wrong passcode.
+      {error && (
+        <p id="pass-error" role="alert" className="text-sm text-red-700">
+          {error}
         </p>
       )}
-      <button className="w-full rounded-md bg-slate-900 px-4 py-2 font-medium text-white">Sign in</button>
+      <button
+        disabled={busy}
+        className="w-full rounded-md bg-slate-900 px-4 py-2 font-medium text-white disabled:opacity-60"
+      >
+        Sign in
+      </button>
     </form>
   );
 }

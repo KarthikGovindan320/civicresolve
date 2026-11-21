@@ -1,5 +1,6 @@
+import Interpolate from "@/components/Interpolate";
 import Photo from "@/components/Photo";
-import { formatDateTime } from "@/lib/client/format";
+import { formatDateTime } from "@/lib/format";
 import type { Translate } from "@/lib/i18n";
 import type { PublicTicket, Resolution } from "@/lib/types";
 import { photoUrl } from "@/lib/workflow";
@@ -28,10 +29,11 @@ export default function ProofOfFix({
       <h2 id="proof-h" className="font-semibold">
         {t("ticket.proof")}
       </h2>
+      {/* The department writes its note in English, and is named in English. */}
       <p className="text-sm">
-        {resolution.note}{" "}
+        <span lang="en">{resolution.note}</span>{" "}
         <span className="text-slate-600">
-          ({resolution.by}, {formatDateTime(resolution.at)})
+          (<span lang="en">{resolution.by}</span>, {formatDateTime(resolution.at)})
         </span>
       </p>
       <p className={`rounded-md px-3 py-2 text-sm ring-1 ${AI_VERDICT_CLASS[resolution.aiVerdict]}`}>
@@ -59,7 +61,7 @@ export default function ProofOfFix({
               className="max-h-60"
             />
             <figcaption className="text-xs text-slate-600">
-              {t("ticket.afterCaption", { by: resolution.by })}
+              <Interpolate message={t("ticket.afterCaption")} values={{ by: <span lang="en">{resolution.by}</span> }} />
             </figcaption>
           </figure>
         )}

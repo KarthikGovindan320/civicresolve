@@ -1,7 +1,6 @@
 import type { MediaPart } from "./gemini";
 import { failure, type Result } from "./result";
 import { sniffAudioType, sniffImageType } from "./security";
-import { LIMITS } from "./types";
 
 // One place for upload handling, shared by every route that accepts files (new
 // reports, "after" photos, reopen photos), so size caps and content checks
@@ -14,9 +13,12 @@ import { LIMITS } from "./types";
 export const MAX_IMAGE = 700_000;
 /** Largest accepted voice note, in bytes: about 60 s of compressed speech. */
 export const MAX_AUDIO = 4_000_000;
+/** Room for the text fields and multipart boundaries next to the files. */
+const FORM_OVERHEAD_BYTES = 100_000;
+/** Largest multipart body any route accepts: a full-size photo and voice note plus the text fields. */
+export const MAX_FORM_BYTES = MAX_IMAGE + MAX_AUDIO + FORM_OVERHEAD_BYTES;
 
 const UNKNOWN_MIME_TYPE = "application/octet-stream";
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** A validated upload (`part` is null when no file was attached), or the reason it was refused. */
 export type UploadResult = Result<{ part: MediaPart | null }>;
@@ -54,14 +56,4 @@ export async function readAudio(entry: FormDataEntryValue | null): Promise<Uploa
   const sniffedType = sniffAudioType(file.data);
   if (!sniffedType) return failure(400, "Voice note must be an audio recording.");
   return { ok: true, part: { ...file, mimeType: sniffedType } };
-}
-
-/**
- * Parse an optional email: null when blank, "invalid" when it doesn't look like
- * one. Deliberately permissive: one @, a dot in the domain, no spaces, max length.
- */
-export function parseEmail(raw: string): string | null | "invalid" {
-  const email = raw.trim().toLowerCase();
-  if (!email) return null;
-  return email.length <= LIMITS.email && EMAIL_PATTERN.test(email) ? email : "invalid";
 }

@@ -45,7 +45,7 @@ export default function SettingsMenu({ initialDisplay }: { initialDisplay: Displ
       buttonRef.current?.focus();
     };
     const closeOnOutsidePress = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      if (!(event.target instanceof Node && rootRef.current?.contains(event.target))) setOpen(false);
     };
     document.addEventListener("keydown", closeOnEscape);
     document.addEventListener("pointerdown", closeOnOutsidePress);

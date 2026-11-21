@@ -1,16 +1,15 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { useT } from "@/components/I18nProvider";
-import Map from "@/components/Map";
+import LazyMap from "@/components/LazyMap";
 import Stats from "@/components/Stats";
-import { OverdueBadge, PRIORITY_COLOR, PriorityBadge, RESOLVED_COLOR, StatusBadge } from "@/components/badges";
-import { compactFieldClass } from "@/components/ui";
 import { apiRequest } from "@/lib/client/api";
-import { formatDateTime } from "@/lib/client/format";
-import { CATEGORIES, PRIORITIES, STATUSES, type PublicTicket } from "@/lib/types";
+import type { PublicTicket } from "@/lib/types";
+import MapLegend from "./MapLegend";
+import TicketList from "./TicketList";
+import TrackFilters from "./TrackFilters";
 
 /**
  * Public issue tracking dashboard: every submitted complaint with its status.
@@ -29,6 +28,7 @@ export default function TrackPage() {
   const [lookupId, setLookupId] = useState("");
 
   useEffect(() => {
+    // Any failure (HTTP error or network) shows the page's own message, in the visitor's language.
     apiRequest<PublicTicket[]>("/api/tickets")
       .then((result) => (result.ok ? setTickets(result.data) : setLoadFailed(true)))
       .catch(() => setLoadFailed(true));
@@ -80,90 +80,20 @@ export default function TrackPage() {
           {t("track.loadError")}
         </p>
       )}
-      {!tickets && !loadFailed && <p className="text-slate-500">{t("common.loading")}</p>}
+      {!tickets && !loadFailed && <p className="text-slate-600">{t("common.loading")}</p>}
       {tickets && (
         <>
           <Stats tickets={tickets} />
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="text-sm">
-              {t("track.filterStatus")}{" "}
-              <select
-                className={compactFieldClass}
-                value={statusFilter}
-                onChange={(event) => setStatusFilter(event.target.value)}
-              >
-                <option value="all">{t("track.all")}</option>
-                {STATUSES.map((status) => (
-                  <option key={status} value={status}>
-                    {t(`status.${status}`)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="text-sm">
-              {t("track.filterCategory")}{" "}
-              <select
-                className={compactFieldClass}
-                value={categoryFilter}
-                onChange={(event) => setCategoryFilter(event.target.value)}
-              >
-                <option value="all">{t("track.all")}</option>
-                {CATEGORIES.map((category) => (
-                  <option key={category} value={category}>
-                    {t(`category.${category}`)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <span className="text-sm text-slate-500">{t("track.shown", { count: visibleTickets.length })}</span>
-          </div>
-          <Map tickets={visibleTickets} height={360} />
-          {/* Legend: pin colour means priority (grey once resolved). Each pin's popup also states it in text. */}
-          <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-700" aria-label={t("track.legend")}>
-            {[...PRIORITIES].reverse().map((priority) => (
-              <li key={priority} className="flex items-center gap-1.5">
-                <span
-                  className="inline-block h-3 w-3 rounded-full ring-1 ring-white"
-                  style={{ background: PRIORITY_COLOR[priority] }}
-                  aria-hidden
-                />
-                {t(`priority.${priority}`)}
-              </li>
-            ))}
-            <li className="flex items-center gap-1.5">
-              <span className="inline-block h-3 w-3 rounded-full" style={{ background: RESOLVED_COLOR }} aria-hidden />
-              {t("status.Resolved")}
-            </li>
-          </ul>
-          <ul className="divide-y divide-slate-200 rounded-lg bg-white ring-1 ring-slate-200">
-            {visibleTickets.map((ticket) => (
-              <li key={ticket.id}>
-                <Link
-                  href={`/track/${ticket.id}`}
-                  className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 hover:bg-slate-50"
-                >
-                  <span className="font-mono text-xs text-slate-600">{ticket.id}</span>
-                  <span className="min-w-[12rem] flex-1 font-medium">{ticket.title}</span>
-                  {/* Badges stay together as one group when the row wraps on a phone. */}
-                  <span className="flex max-w-full flex-wrap items-center gap-2">
-                    {ticket.reporterCount > 1 && (
-                      <span className="text-xs text-slate-600">
-                        {t("common.reporters", { count: ticket.reporterCount })}
-                      </span>
-                    )}
-                    <PriorityBadge priority={ticket.priority} />
-                    <StatusBadge status={ticket.status} />
-                    {ticket.overdue && <OverdueBadge />}
-                  </span>
-                  <span className="w-full text-xs text-slate-600">
-                    {t(`category.${ticket.category}`)} · {ticket.department} ·{" "}
-                    {ticket.location.address || t("common.pinnedLocation")} · {formatDateTime(ticket.createdAt)}
-                  </span>
-                </Link>
-              </li>
-            ))}
-            {!visibleTickets.length && <li className="px-4 py-6 text-center text-slate-500">{t("track.noMatch")}</li>}
-          </ul>
+          <TrackFilters
+            status={statusFilter}
+            category={categoryFilter}
+            onStatusChange={setStatusFilter}
+            onCategoryChange={setCategoryFilter}
+            shownCount={visibleTickets.length}
+          />
+          <LazyMap label={t("map.cityLabel")} tickets={visibleTickets} height={360} />
+          <MapLegend />
+          <TicketList tickets={visibleTickets} />
         </>
       )}
     </div>

@@ -3,8 +3,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { byTriageOrder, inQueue, queuesFor } from "@/app/staff/queues";
 import type { StaffTicket } from "@/app/staff/types";
-import { apiRequest, citizenRequest, staffRequest } from "@/lib/client/api";
-import { formatDateTime, formatDay, languageName } from "@/lib/client/format";
+import { apiRequest, citizenRequest, failureMessages, settle, staffRequest } from "@/lib/client/api";
+import { createTranslator } from "@/lib/i18n";
+import { formatDateTime, formatDay } from "@/lib/format";
 
 function stubFetch(status: number, body: unknown) {
   const fetchMock = vi.fn<(path: string, init: RequestInit) => Promise<Response>>(
@@ -53,6 +54,33 @@ describe("apiRequest", () => {
   it("leaves the error undefined when the server sent none, so callers can choose a fallback", async () => {
     stubFetch(401, { ok: false });
     expect(await apiRequest("/api/staff/session")).toEqual({ ok: false, status: 401, error: undefined });
+  });
+});
+
+describe("settle", () => {
+  const messages = { failed: "Something went wrong.", network: "Network error." };
+
+  it("passes the data through on success", async () => {
+    stubFetch(200, { id: "CR-1" });
+    expect(await settle(apiRequest("/api/tickets/CR-1"), messages)).toEqual({ ok: true, data: { id: "CR-1" } });
+  });
+
+  it("prefers the server's message, and falls back when there is none", async () => {
+    stubFetch(429, { error: "Too many requests." });
+    expect(await settle(apiRequest("/api/tickets"), messages)).toEqual({ ok: false, error: "Too many requests." });
+    stubFetch(500, {});
+    expect(await settle(apiRequest("/api/tickets"), messages)).toEqual({ ok: false, error: "Something went wrong." });
+  });
+
+  it("turns a network failure into a message instead of throwing", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    expect(await settle(apiRequest("/api/tickets"), messages)).toEqual({ ok: false, error: "Network error." });
+  });
+
+  it("builds the usual messages in the interface language", () => {
+    const t = createTranslator("ta");
+    expect(failureMessages(t)).toEqual({ failed: t("common.error.generic"), network: t("common.error.network") });
+    expect(failureMessages(t, "chat.error.send").failed).toBe(t("chat.error.send"));
   });
 });
 
@@ -119,10 +147,5 @@ describe("display formatting", () => {
 
   it("formats a calendar day without shifting it across timezones", () => {
     expect(formatDay("2026-03-05")).toBe("5 Mar 2026");
-  });
-
-  it("names known languages and falls back to the code", () => {
-    expect(languageName("ta")).toBe("Tamil");
-    expect(languageName("fr")).toBe("FR");
   });
 });

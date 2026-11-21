@@ -20,18 +20,18 @@ export type MessageKey = keyof typeof en;
 /** A complete set of messages for one language. */
 export type Dictionary = Record<MessageKey, string>;
 
-/** The languages the interface is offered in, each with its own name for the switcher. */
-export const LANGUAGES = {
+/** Supported interface language codes, in the order the switcher lists them. */
+export const LANGUAGE_CODES = ["en", "ta", "hi"] as const;
+
+/** A supported interface language code. */
+export type Lang = (typeof LANGUAGE_CODES)[number];
+
+/** Each language's own name, for the switcher. `Record<Lang, …>` makes a missing language a compile error. */
+export const LANGUAGES: Record<Lang, { name: string }> = {
   en: { name: "English" },
   ta: { name: "தமிழ்" },
   hi: { name: "हिंदी" },
-} as const;
-
-/** A supported interface language code. */
-export type Lang = keyof typeof LANGUAGES;
-
-/** Language codes in the order the switcher lists them. */
-export const LANGUAGE_CODES = Object.keys(LANGUAGES) as Lang[];
+};
 
 /** The language used when the visitor has not chosen one and the browser asks for none we support. */
 export const DEFAULT_LANG: Lang = "en";
@@ -71,11 +71,14 @@ export function createTranslator(
   };
 }
 
+/** Whether `key` names a message in the dictionaries. */
+const isMessageKey = (key: string): key is MessageKey => Object.hasOwn(en, key);
+
 /**
  * Name of a report's language in the interface language, for any language
  * code Gemini may detect; unknown codes are shown upper-cased.
  */
 export function languageLabel(t: Translate, code: string): string {
   const key = `language.${code}`;
-  return Object.hasOwn(en, key) ? t(key as MessageKey) : code.toUpperCase();
+  return isMessageKey(key) ? t(key) : code.toUpperCase();
 }

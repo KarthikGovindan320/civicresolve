@@ -82,10 +82,15 @@ export default function TicketCard({
 
           <div>
             <h3 className="mb-2 text-sm font-semibold">Conversation with the citizen (anonymous, auto-translated)</h3>
-            <MessageThread messages={ticket.messages ?? []} viewer="staff" onSend={sendMessage} />
+            <MessageThread
+              messages={ticket.messages ?? []}
+              viewer="staff"
+              citizenLanguage={ticket.originalLanguage}
+              onSend={sendMessage}
+            />
           </div>
 
-          <NoteForm ticketId={ticket.id} note={note} onNoteChange={setNote} onUpdate={update} />
+          <NoteForm ticketId={ticket.id} note={note} onNoteChange={setNote} busy={busy} onUpdate={update} />
 
           {isAdmin && <AdminOverrides ticket={ticket} onUpdate={update} />}
         </div>

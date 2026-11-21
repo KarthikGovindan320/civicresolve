@@ -8,17 +8,19 @@
 //   note        → add a note to the public timeline
 //   update      → admin only: override status / category / department / priority
 //                 (a human in the loop over the AI's decisions)
-// Each action is a pure function of (ticket, input, context): it returns the
-// updated ticket, or the error to answer with. Nothing here touches the
-// database, the network or the logger, which keeps every rule unit-testable
+// Each action is a function of (ticket, input, context) without side effects:
+// it returns the updated ticket, or the error to answer with. Nothing here
+// touches the database, the network or the logger (only a conversation message
+// it adds draws a random id), which keeps every rule unit-testable
 // (tests/ticket-actions.test.ts); the route persists and notifies.
 // =============================================================================
 import { isAdminRole, roleLabel } from "../auth";
+import { formatDay } from "../format";
 import { failure, type Result } from "../result";
 import { recomputePriority } from "../rules";
 import type { AcknowledgeInput, NoteInput, ReviewInput, TicketAction, TransferInput, UpdateInput } from "../schemas";
-import { CATEGORY_DEPARTMENT, fmtDay, isPendingReview, type Resolution, type Role, type Ticket } from "../types";
-import { appendHistory, appendMessage, systemMessage } from "../workflow";
+import { CATEGORY_DEPARTMENT, isPendingReview, type Role, type Ticket } from "../types";
+import { appendHistory, appendMessage, resolutionWithoutPhoto, systemMessage } from "../workflow";
 
 /** Who is acting and when. Passed in so the actions stay deterministic. */
 export interface ActionContext {
@@ -86,7 +88,7 @@ export function acknowledgeTicket(ticket: Ticket, input: AcknowledgeInput, { rol
   if (ticket.status !== "Reported") return failure(400, "Only a newly reported issue can be accepted.");
   if (isPendingReview(ticket)) return failure(400, "This report is waiting for the city admin's review.");
   const { expectedFixDate, note } = input;
-  const commitment = expectedFixDate ? ` and expects to fix it by ${fmtDay(expectedFixDate)}` : "";
+  const commitment = expectedFixDate ? ` and expects to fix it by ${formatDay(expectedFixDate)}` : "";
   const text = `${roleLabel(role)} accepted this issue${commitment}.${trailingNote(note)}`;
   const acknowledged = appendHistory(
     { ...ticket, status: "In Progress", acknowledgedAt: now, expectedFixDate, resolvedAt: null },
@@ -137,18 +139,6 @@ export function addTicketNote(ticket: Ticket, input: NoteInput, { role, now }: A
   return done(noted);
 }
 
-/** The resolution recorded when the admin closes a ticket by status override, without an after-photo. */
-function adminResolution(note: string, by: string, now: string): Resolution {
-  return {
-    note: note || "Marked resolved by the city admin.",
-    hasPhoto: false,
-    aiVerdict: "unclear",
-    aiReason: "No after-photo was provided.",
-    by,
-    at: now,
-  };
-}
-
 /**
  * Status override: each change is appended to the public history (with the
  * admin's note), and resolvedAt is stamped so the dashboard can report average
@@ -170,7 +160,9 @@ function applyStatusOverride(
     status,
     resolvedAt: resolved ? now : null,
     citizenConfirmation: resolved ? "pending" : null,
-    resolution: resolved ? adminResolution(note, roleLabel(role), now) : null,
+    resolution: resolved
+      ? resolutionWithoutPhoto({ note: note || "Marked resolved by the city admin.", by: roleLabel(role), at: now })
+      : null,
   };
   return {
     ticket: appendHistory(changed, { status, at: now, note: note || undefined }),

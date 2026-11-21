@@ -9,10 +9,18 @@
 // into the instructions, which limits prompt injection through complaint text.
 // =============================================================================
 import { z } from "zod";
-import { CATEGORIES, CATEGORY_DEPARTMENT, DEPARTMENTS, PRIORITIES, type Category, type Ticket } from "../types";
+import {
+  AI_VERDICTS,
+  CATEGORIES,
+  CATEGORY_DEPARTMENT,
+  DEPARTMENTS,
+  PRIORITIES,
+  type Category,
+  type Classification,
+  type Ticket,
+} from "../types";
 
-/** A nearby open ticket offered to the model as a possible duplicate. */
-/** What the duplicate check needs to know about a nearby open ticket. */
+/** What the duplicate check needs to know about a nearby open ticket offered to the model. */
 export type DuplicateCandidate = Pick<Ticket, "id" | "englishSummary"> & { distance: number };
 
 // ---- Classification ---------------------------------------------------------
@@ -31,7 +39,7 @@ export const ClassificationSchema = z.object({
   englishSummary: z.string(),
   detectedLanguage: z.string(),
   transcript: z.string().nullable(),
-});
+}) satisfies z.ZodType<Classification>;
 
 /**
  * JSON Schema sent to Gemini. The enums constrain the model to the exact
@@ -155,16 +163,13 @@ export function translationPrompt(text: string, targetLanguage: string): string 
 
 // ---- Resolution verification ------------------------------------------------
 
-/** The verdicts a proof-of-fix check can return. */
-export const VERIFICATION_VERDICTS = ["fixed", "not_fixed", "unclear"] as const;
-
 /** Runtime validation of the proof-of-fix answer. */
-export const VerificationSchema = z.object({ verdict: z.enum(VERIFICATION_VERDICTS), reason: z.string() });
+export const VerificationSchema = z.object({ verdict: z.enum(AI_VERDICTS), reason: z.string() });
 
 export const VERIFICATION_JSON_SCHEMA = {
   type: "object",
   properties: {
-    verdict: { type: "string", enum: [...VERIFICATION_VERDICTS] },
+    verdict: { type: "string", enum: [...AI_VERDICTS] },
     reason: { type: "string", description: "One sentence explaining the verdict." },
   },
   required: ["verdict", "reason"],

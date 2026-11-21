@@ -23,6 +23,11 @@ export const CATEGORIES = [
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
 
+/** Whether `value` is one of `allowed`: narrows untrusted input to a domain type without a cast. */
+export function isOneOf<T extends string>(allowed: readonly T[], value: unknown): value is T {
+  return allowed.some((candidate) => candidate === value);
+}
+
 // Priority Detection: four ordered levels. The order matters:
 // rules.ts bumps priority by index, so the array runs lowest → highest.
 export const PRIORITIES = ["Low", "Medium", "High", "Critical"] as const;
@@ -60,16 +65,23 @@ export const CATEGORY_DEPARTMENT: Record<Category, Department> = {
   Other: "General Administration",
 };
 
+// Ticket ids are the prefix plus a sequence number: CR-1001, CR-1002, …
+export const TICKET_ID_PREFIX = "CR-";
+/** What a ticket id looks like; anything else can't name a ticket. */
+export const TICKET_ID_PATTERN = new RegExp(`^${TICKET_ID_PREFIX}\\d+$`);
+
 export interface Location {
   lat: number;
   lng: number;
   address: string;
 }
 
-// Service-level targets: how fast each priority
-// must be resolved. Overdue tickets are escalated to the city admin and count
-// against the department's on-time rate. That gives "resolution" a deadline,
-// not just a status.
+/** A point on the map. */
+export type Coordinates = Pick<Location, "lat" | "lng">;
+
+// Service-level targets: how fast each priority must be resolved. Overdue
+// tickets are escalated to the city admin and count against the department's
+// on-time rate. That gives "resolution" a deadline, not just a status.
 export const SLA_HOURS: Record<Priority, number> = {
   Critical: 24,
   High: 72,
@@ -84,13 +96,17 @@ export const AUTO_CLOSE_DAYS = 3;
 // private link token; staff sign in either as a department or as the city admin.
 export type Role = { role: "admin" } | { role: "department"; department: Department };
 
-// Two-way conversation between the
-// department and the citizen. Each message keeps the author's original text,
-// and Gemini adds a translation so a Tamil-speaking citizen and an
-// English-writing official can understand each other.
+// Who can write in a ticket's conversation: the citizen, the responsible
+// department, the city admin, or the system (automatic workflow updates).
+export const MESSAGE_AUTHORS = ["citizen", "department", "admin", "system"] as const;
+export type MessageAuthor = (typeof MESSAGE_AUTHORS)[number];
+
+// Two-way conversation between the department and the citizen. Each message
+// keeps the author's original text, and Gemini adds a translation so a
+// Tamil-speaking citizen and an English-writing official can understand each other.
 export interface Message {
   id: string;
-  from: "citizen" | "department" | "admin" | "system";
+  from: MessageAuthor;
   text: string;
   lang: string; // ISO 639-1 language of `text`
   translation?: string | null; // English for citizen messages; citizen's language for staff messages
@@ -112,16 +128,29 @@ export interface Reporter {
   at: string;
 }
 
-// Proof of resolution: the department's "after"
-// photo, checked by Gemini against the citizen's original report.
+// The verdicts Gemini's proof-of-fix check can return ("unclear" also when no check was possible).
+export const AI_VERDICTS = ["fixed", "not_fixed", "unclear"] as const;
+export type AiVerdict = (typeof AI_VERDICTS)[number];
+
+// Proof of resolution: the department's "after" photo, checked by Gemini
+// against the citizen's original report.
 export interface Resolution {
   note: string;
   hasPhoto: boolean;
-  aiVerdict: "fixed" | "not_fixed" | "unclear";
+  aiVerdict: AiVerdict;
   aiReason: string;
   by: string; // department name
   at: string;
 }
+
+// How a ticket was classified: by Gemini, by the keyword rules when AI was
+// unavailable, or as bundled demo data.
+export const CLASSIFIED_BY = ["gemini", "fallback", "seed"] as const;
+export type ClassifiedBy = (typeof CLASSIFIED_BY)[number];
+
+// The citizen's verdict on a reported fix. "pending" until they answer or it auto-closes.
+export const CITIZEN_CONFIRMATIONS = ["pending", "confirmed", "reopened", "auto-closed"] as const;
+export type CitizenConfirmation = (typeof CITIZEN_CONFIRMATIONS)[number];
 
 // Every status change and admin note is appended here. This powers the public
 // timeline on the ticket page: transparency about what happened and when.
@@ -171,7 +200,7 @@ export interface Ticket {
   hasImage: boolean;
   history?: HistoryEntry[];
   /** "gemini" when classified by AI, "fallback" when the rule-based path was used. */
-  classifiedBy?: "gemini" | "fallback" | "seed";
+  classifiedBy?: ClassifiedBy;
 
   // ---- Department workflow (beyond the brief) ----
   /** When the responsible department accepted the ticket. */
@@ -187,7 +216,7 @@ export interface Ticket {
   /** Proof of fix submitted by the department. */
   resolution?: Resolution | null;
   /** Citizen's verdict on the fix. "pending" until they answer or it auto-closes. */
-  citizenConfirmation?: "pending" | "confirmed" | "reopened" | "auto-closed" | null;
+  citizenConfirmation?: CitizenConfirmation | null;
   /** How many times citizens reopened the ticket after a claimed fix. */
   reopenCount?: number;
   /** How the reporter was verified. "phone" = OTP-verified (normal flow). "unverified" = submitted
@@ -233,18 +262,12 @@ export const LIMITS = {
   search: 120,
 } as const;
 
-/**
- * Promised fix dates are stored as plain "YYYY-MM-DD" but shown as "24 Nov 2026", the same
- * style as every other date in the app (raw ISO dates read oddly, especially to screen readers).
- */
-export const fmtDay = (isoDay: string) =>
-  new Date(`${isoDay}T00:00:00Z`).toLocaleDateString("en-IN", { dateStyle: "medium", timeZone: "UTC" });
-
 // Two buckets for reports.
 // Phone-verified reports flow straight to the department. Reports sent WITHOUT phone verification
 // are not thrown away (a genuine citizen may have no phone or not want to share it), but they are
 // HELD: invisible to the public and to departments until the city admin approves them.
-export type Verification = "phone" | "unverified" | "approved" | "rejected";
+export const VERIFICATIONS = ["phone", "unverified", "approved", "rejected"] as const;
+export type Verification = (typeof VERIFICATIONS)[number];
 export const isPendingReview = (t: { verification?: Verification }) => t.verification === "unverified";
 export const isHeld = (t: { verification?: Verification }) =>
   t.verification === "unverified" || t.verification === "rejected";

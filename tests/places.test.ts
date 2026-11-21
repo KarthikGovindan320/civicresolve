@@ -74,6 +74,20 @@ describe("address search with Google Places API (New)", () => {
     expect(res.status).toBe(502);
     expect((await res.json()).error).toMatch(/tap the map/i);
   });
+
+  it("treats an answer of the wrong shape as a failure, never as a half-filled place", async () => {
+    process.env.GOOGLE_MAPS_API_KEY = "test-key";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ formattedAddress: "Somewhere" })), // no coordinates
+    );
+    expect((await get(`id=ChIJabc123xyz&session=${SESSION}`)).status).toBe(502);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("<html>error page</html>")),
+    );
+    expect((await get(`q=katpadi&session=${SESSION}`)).status).toBe(502);
+  });
 });
 
 describe("fallback without a Google key", () => {
@@ -89,6 +103,13 @@ describe("fallback without a Google key", () => {
     const body = await (await get("q=cmc%20hospital")).json();
     expect(body.provider).toBe("osm");
     expect(body.suggestions[0]).toMatchObject({ main: "CMC Hospital", lat: 12.92, lng: 79.13 });
+  });
+  it("rejects OpenStreetMap rows without coordinates", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json([{ place_id: 2, display_name: "Nowhere" }])),
+    );
+    expect((await get("q=nowhere")).status).toBe(502);
   });
   it("ignores queries shorter than 3 characters without calling anything", async () => {
     const fetchMock = vi.fn();

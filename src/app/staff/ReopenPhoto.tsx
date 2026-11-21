@@ -1,4 +1,5 @@
 import Photo from "@/components/Photo";
+import { photoPath } from "@/lib/photos";
 import type { StaffTicket } from "./types";
 
 /**
@@ -11,7 +12,7 @@ export default function ReopenPhoto({ ticket }: { ticket: StaffTicket }) {
   return (
     <figure>
       <Photo
-        src={`/api/tickets/${ticket.id}/image?v=reopen&t=${encodeURIComponent(ticket.updatedAt)}`}
+        src={photoPath(ticket.id, "reopen", ticket.updatedAt)}
         alt={`New photo from the citizen after reopening ${ticket.id}`}
         className="max-h-48"
       />

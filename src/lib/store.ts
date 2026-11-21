@@ -16,10 +16,12 @@ import "server-only";
 import { promises as fs } from "fs";
 import path from "path";
 import seed from "../../seed/vellore_tickets.json";
+import { DAY_MS } from "./constants";
 import { log } from "./log";
 import { parseStoredImage, parseTicket, type StoredImage } from "./records";
 import { recomputePriority } from "./rules";
-import type { Category, HistoryEntry, Message, Ticket } from "./types";
+import { TICKET_ID_PREFIX, type Category, type HistoryEntry, type Message, type Ticket } from "./types";
+import { resolutionWithoutPhoto } from "./workflow";
 
 export type { StoredImage } from "./records";
 
@@ -46,16 +48,12 @@ export interface Store {
   create(build: (id: string) => Ticket): Promise<Ticket>;
   /** Apply `change` to the latest stored ticket atomically. Resolves to the saved ticket, or null if nothing was saved. */
   update(id: string, change: TicketChange): Promise<Ticket | null>;
-  /** Replace a ticket outright (seeding and tests). Prefer `update` for changes. */
-  put(ticket: Ticket): Promise<void>;
   putImage(id: string, image: StoredImage): Promise<void>;
   getImage(id: string): Promise<StoredImage | null>;
 }
 
-const TICKET_ID_PREFIX = "CR-";
 /** The first ticket ever issued is CR-1001. */
 const TICKET_ID_FLOOR = 1000;
-const DAY_MS = 864e5;
 /** Seed tickets that are in progress promise a fix this many days after they were accepted. */
 const SEED_FIX_DAYS = 2;
 /** The seed ticket that carries a sample translated conversation. */
@@ -94,14 +92,11 @@ function seedHistory(raw: Ticket): HistoryEntry[] {
 /** Resolution record for seed tickets that are already fixed (they predate photo verification). */
 function seedResolution(raw: Ticket): Ticket["resolution"] {
   if (raw.status !== "Resolved") return null;
-  return {
+  return resolutionWithoutPhoto({
     note: raw.adminNotes.at(-1) ?? "Fixed",
-    hasPhoto: false,
-    aiVerdict: "unclear",
-    aiReason: "Resolved before photo verification was introduced.",
     by: raw.department,
     at: raw.resolvedAt ?? raw.updatedAt,
-  };
+  });
 }
 
 /** One seed ticket carries a sample department ↔ citizen conversation (with translation) to show the flow. */
@@ -242,12 +237,6 @@ class FileStore implements Store {
       return changed;
     });
   }
-  put(ticket: Ticket) {
-    return this.exclusive(async (tickets) => {
-      tickets.set(ticket.id, ticket);
-      await this.write(tickets.values());
-    });
-  }
   async putImage(id: string, image: StoredImage) {
     await fs.mkdir(this.imageDir, { recursive: true });
     await fs.writeFile(path.join(this.imageDir, `${id}.json`), JSON.stringify(image));
@@ -348,9 +337,6 @@ class FirestoreStore implements Store {
       if (changed) transaction.set(ref, toFirestore(changed));
       return changed;
     });
-  }
-  async put(ticket: Ticket) {
-    await (await this.collection()).doc(ticket.id).set(toFirestore(ticket));
   }
   async putImage(id: string, image: StoredImage) {
     // Images are downscaled on the client (~100-300 KB), which fits in a Firestore doc (1 MB limit).

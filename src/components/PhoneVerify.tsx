@@ -1,16 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { apiRequest } from "@/lib/client/api";
+import { apiRequest, failureMessages, settle } from "@/lib/client/api";
+import { OTP_DIGITS } from "@/lib/constants";
 import { useT } from "./I18nProvider";
 import LabelledField from "./LabelledField";
 import { fieldClass } from "./ui";
+import { useModalFocusTrap } from "./useModalFocusTrap";
 
 const REMEMBERED_PHONE_STORAGE = "civicresolve.phone";
-const OTP_PATTERN = /^\d{6}$/;
-const FOCUSABLE =
-  "input:not([disabled]), button:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled])";
+const OTP_PATTERN = new RegExp(`^\\d{${OTP_DIGITS}}$`);
+const ERROR_ID = "verify-error";
 
 function readRememberedPhone(): string {
   try {
@@ -63,68 +64,40 @@ export default function PhoneVerify({ onVerified, onCancel, busy }: Props) {
   const [sent, setSent] = useState<OtpChallenge | null>(null);
   const [otp, setOtp] = useState("");
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // The field an error is about is marked invalid and described by the message.
+  const [error, setError] = useState<{ message: string; field?: "phone" | "otp" } | null>(null);
 
-  const phoneRef = useRef<HTMLInputElement>(null);
   const otpRef = useRef<HTMLInputElement>(null);
-  const dialogRef = useRef<HTMLFormElement>(null);
+  const dialogRef = useModalFocusTrap<HTMLFormElement>(() => {
+    if (!busy) onCancel();
+  });
 
-  // Move focus into the dialog on open, and give it back to whatever opened it on close.
-  useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    phoneRef.current?.focus();
-    return () => opener?.focus();
-  }, []);
-
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busy) onCancel();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [busy, onCancel]);
-
-  /** Keeps Tab and Shift+Tab inside the dialog, wrapping at either end. */
-  function trapFocus(event: React.KeyboardEvent<HTMLFormElement>) {
-    if (event.key !== "Tab") return;
-    const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE);
-    if (!focusable?.length) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
+  const phoneInvalid = error?.field === "phone";
 
   async function sendCode() {
     setError(null);
     setSending(true);
-    try {
-      const result = await apiRequest<OtpChallenge>("/api/otp", { method: "POST", json: { phone } });
-      if (!result.ok) return setError(result.error ?? t("verify.error.sendFailed"));
-      const { challenge, phone: normalisedPhone, devCode } = result.data;
-      setSent({ challenge, phone: normalisedPhone, devCode });
-      setOtp("");
-      // The code field only exists after this render, so focus it on the next tick.
-      setTimeout(() => otpRef.current?.focus(), 0);
-    } catch {
-      setError(t("common.error.network"));
-    } finally {
-      setSending(false);
-    }
+    const outcome = await settle(
+      apiRequest<OtpChallenge>("/api/otp", { method: "POST", json: { phone } }),
+      failureMessages(t, "verify.error.sendFailed"),
+    );
+    setSending(false);
+    if (!outcome.ok) return setError({ message: outcome.error, field: "phone" });
+    const { challenge, phone: normalisedPhone, devCode } = outcome.data;
+    setSent({ challenge, phone: normalisedPhone, devCode });
+    setOtp("");
+    // The code field only exists after this render, so focus it on the next tick.
+    setTimeout(() => otpRef.current?.focus(), 0);
   }
 
   async function verify(event: React.FormEvent) {
     event.preventDefault();
     if (!sent) return sendCode();
-    if (!OTP_PATTERN.test(otp)) return setError(t("verify.error.codeFormat"));
+    if (!OTP_PATTERN.test(otp))
+      return setError({ message: t("verify.error.codeFormat", { digits: OTP_DIGITS }), field: "otp" });
     setError(null);
     const submitError = await onVerified({ phone: sent.phone, otp, otpChallenge: sent.challenge });
-    if (submitError) return setError(submitError);
+    if (submitError) return setError({ message: submitError, field: "otp" });
     try {
       if (remember) localStorage.setItem(REMEMBERED_PHONE_STORAGE, phone);
       else localStorage.removeItem(REMEMBERED_PHONE_STORAGE);
@@ -134,7 +107,14 @@ export default function PhoneVerify({ onVerified, onCancel, busy }: Props) {
   async function submitUnverified() {
     setError(null);
     const submitError = await onVerified(null);
-    if (submitError) setError(submitError);
+    if (submitError) setError({ message: submitError });
+  }
+
+  /** The main button's label: what pressing it will do, or what is happening now. */
+  function submitLabel() {
+    if (busy) return t("report.analysing");
+    if (sending) return t("common.sending");
+    return sent ? t("verify.submit") : t("verify.sendCode");
   }
 
   // Rendered into <body> via a portal so no ancestor stacking context (or the map's controls)
@@ -149,7 +129,6 @@ export default function PhoneVerify({ onVerified, onCancel, busy }: Props) {
         aria-labelledby="verify-title"
         aria-describedby="verify-why"
         onSubmit={verify}
-        onKeyDown={trapFocus}
         noValidate
         className="max-h-full w-full max-w-md space-y-4 overflow-y-auto rounded-xl bg-white p-5 shadow-xl ring-1 ring-slate-300"
       >
@@ -169,7 +148,6 @@ export default function PhoneVerify({ onVerified, onCancel, busy }: Props) {
             </span>
             <input
               id="phone"
-              ref={phoneRef}
               type="tel"
               inputMode="numeric"
               autoComplete="tel-national"
@@ -182,6 +160,8 @@ export default function PhoneVerify({ onVerified, onCancel, busy }: Props) {
                 setSent(null);
               }}
               disabled={busy}
+              aria-invalid={phoneInvalid || undefined}
+              aria-describedby={phoneInvalid ? ERROR_ID : undefined}
             />
           </div>
           <label className="mt-2 flex items-center gap-2 text-sm text-slate-700">
@@ -191,40 +171,21 @@ export default function PhoneVerify({ onVerified, onCancel, busy }: Props) {
         </LabelledField>
 
         {sent && (
-          <LabelledField id="otp" label={t("verify.codeLabel", { phone: sent.phone })}>
-            <input
-              id="otp"
-              ref={otpRef}
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              pattern="\d{6}"
-              className={`${fieldClass} tracking-[0.4em]`}
-              value={otp}
-              maxLength={6}
-              onChange={(event) => setOtp(event.target.value.replace(/\D/g, ""))}
-              disabled={busy}
-              aria-describedby={sent.devCode ? "otp-stub" : undefined}
-            />
-            {/* Demo note: shown only while no SMS gateway is configured (the server sends devCode only then). */}
-            {sent.devCode && (
-              <p id="otp-stub" className="mt-1 text-xs text-slate-500">
-                {t("verify.demoBefore")} <strong className="font-mono">{sent.devCode}</strong>. {t("verify.demoAfter")}
-              </p>
-            )}
-            <button
-              type="button"
-              onClick={sendCode}
-              disabled={sending || busy}
-              className="mt-1 text-xs font-medium text-blue-700 underline disabled:opacity-50"
-            >
-              {t("verify.newCode")}
-            </button>
-          </LabelledField>
+          <CodeField
+            challenge={sent}
+            inputRef={otpRef}
+            code={otp}
+            onCodeChange={setOtp}
+            invalid={error?.field === "otp"}
+            busy={busy}
+            onNewCode={sendCode}
+            newCodeDisabled={sending || busy}
+          />
         )}
 
         {error && (
-          <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">
-            {error}
+          <p id={ERROR_ID} role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">
+            {error.message}
           </p>
         )}
 
@@ -232,15 +193,9 @@ export default function PhoneVerify({ onVerified, onCancel, busy }: Props) {
           <button
             type="submit"
             disabled={busy || sending}
-            className="flex-1 rounded-md bg-emerald-600 px-4 py-2 font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+            className="flex-1 rounded-md bg-emerald-700 px-4 py-2 font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
           >
-            {busy
-              ? t("report.analysing")
-              : sending
-                ? t("common.sending")
-                : sent
-                  ? t("verify.submit")
-                  : t("verify.sendCode")}
+            {submitLabel()}
           </button>
           <button
             type="button"
@@ -269,5 +224,63 @@ export default function PhoneVerify({ onVerified, onCancel, busy }: Props) {
       </form>
     </div>,
     document.body,
+  );
+}
+
+/** The one-time-code field, with the demo note (while SMS is not connected) and "Send a new code". */
+function CodeField({
+  challenge,
+  inputRef,
+  code,
+  onCodeChange,
+  invalid,
+  busy,
+  onNewCode,
+  newCodeDisabled,
+}: {
+  challenge: OtpChallenge;
+  inputRef: React.Ref<HTMLInputElement>;
+  code: string;
+  onCodeChange: (code: string) => void;
+  /** Whether the dialog's error is about the code, which then describes the field. */
+  invalid: boolean;
+  busy: boolean;
+  onNewCode: () => void;
+  newCodeDisabled: boolean;
+}) {
+  const t = useT();
+  // The field can be described by both the demo note and the error.
+  const description = [challenge.devCode && "otp-stub", invalid && ERROR_ID].filter(Boolean).join(" ");
+  return (
+    <LabelledField id="otp" label={t("verify.codeLabel", { phone: challenge.phone, digits: OTP_DIGITS })}>
+      <input
+        id="otp"
+        ref={inputRef}
+        inputMode="numeric"
+        autoComplete="one-time-code"
+        pattern={`\\d{${OTP_DIGITS}}`}
+        className={`${fieldClass} tracking-[0.4em]`}
+        value={code}
+        maxLength={OTP_DIGITS}
+        onChange={(event) => onCodeChange(event.target.value.replace(/\D/g, ""))}
+        disabled={busy}
+        aria-invalid={invalid || undefined}
+        aria-describedby={description || undefined}
+      />
+      {/* Demo note: shown only while no SMS gateway is configured (the server sends devCode only then). */}
+      {challenge.devCode && (
+        <p id="otp-stub" className="mt-1 text-xs text-slate-600">
+          {t("verify.demoBefore")} <strong className="font-mono">{challenge.devCode}</strong>. {t("verify.demoAfter")}
+        </p>
+      )}
+      <button
+        type="button"
+        onClick={onNewCode}
+        disabled={newCodeDisabled}
+        className="mt-1 inline-flex min-h-6 items-center text-xs font-medium text-blue-700 underline disabled:opacity-50"
+      >
+        {t("verify.newCode")}
+      </button>
+    </LabelledField>
   );
 }

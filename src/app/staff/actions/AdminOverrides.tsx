@@ -19,25 +19,25 @@ export default function AdminOverrides({ ticket, onUpdate }: { ticket: StaffTick
         label="Status"
         value={ticket.status}
         options={STATUSES}
-        onChange={(status) => onUpdate({ action: "update", status }, "status updated")}
+        onChange={(status) => onUpdate({ action: "update", status, note: "" }, "status updated")}
       />
       <OverrideSelect
         label="Category"
         value={ticket.category}
         options={CATEGORIES}
-        onChange={(category) => onUpdate({ action: "update", category }, "re-categorised")}
+        onChange={(category) => onUpdate({ action: "update", category, note: "" }, "re-categorised")}
       />
       <OverrideSelect
         label="Department"
         value={ticket.department}
         options={DEPARTMENTS}
-        onChange={(department) => onUpdate({ action: "update", department }, "re-assigned")}
+        onChange={(department) => onUpdate({ action: "update", department, note: "" }, "re-assigned")}
       />
       <OverrideSelect
         label="Priority"
         value={basePriority}
         options={PRIORITIES}
-        onChange={(priority) => onUpdate({ action: "update", priority }, "priority set")}
+        onChange={(priority) => onUpdate({ action: "update", priority, note: "" }, "priority set")}
       />
       {/* The select shows the admin's base priority; the effective one can be higher (life-safety rule or
           several reporters). Saying so keeps the two values from looking like a bug. */}
@@ -51,21 +51,27 @@ export default function AdminOverrides({ ticket, onUpdate }: { ticket: StaffTick
   );
 }
 
-function OverrideSelect({
+/** One labelled select over a fixed set of values; only a value from `options` ever reaches `onChange`. */
+function OverrideSelect<Value extends string>({
   label,
   value,
   options,
   onChange,
 }: {
   label: string;
-  value: string;
-  options: readonly string[];
-  onChange: (value: string) => void;
+  value: Value;
+  options: readonly Value[];
+  onChange: (value: Value) => void;
 }) {
+  function select(event: React.ChangeEvent<HTMLSelectElement>) {
+    const chosen = options.find((option) => option === event.target.value);
+    if (chosen) onChange(chosen);
+  }
+
   return (
     <label className="text-xs">
       {label}{" "}
-      <select className={compactFieldClass} value={value} onChange={(event) => onChange(event.target.value)}>
+      <select className={compactFieldClass} value={value} onChange={select}>
         {options.map((option) => (
           <option key={option}>{option}</option>
         ))}

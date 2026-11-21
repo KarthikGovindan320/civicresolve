@@ -2,9 +2,10 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "civic-misc-"));
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "civic-misc-"));
+process.env.DATA_DIR = dataDir;
 process.env.ADMIN_PASSCODE = "misc-admin";
 process.env.DEPT_PASSCODES = JSON.stringify({ Sanitation: "misc-san" });
 delete process.env.GEMINI_API_KEY;
@@ -21,14 +22,34 @@ beforeAll(async () => {
   otp = await import("@/lib/otp");
   workflow = await import("@/lib/workflow");
 });
+afterAll(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
-const withKey = (key?: string) =>
-  new Request("http://t/api/staff/session", { headers: key ? { "x-staff-key": key } : {} });
+let sessionIp = 0;
+const withKey = (key?: string, ip = `60.0.0.${++sessionIp}`) =>
+  new Request("http://t/api/staff/session", {
+    headers: { "x-forwarded-for": ip, ...(key ? { "x-staff-key": key } : {}) },
+  });
 
 describe("GET /api/staff/session", () => {
-  it("rejects a missing or wrong passcode", async () => {
-    expect((await session.GET(withKey())).status).toBe(401);
+  it("rejects a missing or wrong passcode with the standard error body", async () => {
+    const missing = await session.GET(withKey());
+    expect(missing.status).toBe(401);
+    expect(await missing.json()).toEqual({ error: "Staff sign-in required." });
     expect((await session.GET(withKey("nope"))).status).toBe(401);
+  });
+
+  it("locks out a client guessing passcodes, with Retry-After, even for the right one", async () => {
+    const { MAX_FAILED_SIGN_INS } = await import("@/lib/auth");
+    const guesser = "60.0.1.1";
+    for (let i = 0; i < MAX_FAILED_SIGN_INS; i++)
+      expect((await session.GET(withKey(`guess${i}`, guesser))).status).toBe(401);
+    const locked = await session.GET(withKey("misc-admin", guesser));
+    expect(locked.status).toBe(429);
+    const retryAfter = Number(locked.headers.get("Retry-After"));
+    expect(retryAfter).toBeGreaterThan(0);
+    expect(retryAfter).toBeLessThanOrEqual(5 * 60); // a five-minute lockout
+    expect(await locked.json()).toEqual({ error: "Too many wrong passcodes. Please try again in 5 minutes." });
+    expect((await session.GET(withKey("misc-admin"))).status).toBe(200); // other clients are unaffected
   });
 
   it("identifies the admin and a department, and reports which integrations are live", async () => {
@@ -67,14 +88,14 @@ describe("GET /api/tickets/[id]/image", () => {
       }),
     );
     const body = await res.json();
-    return { id: body.ticket.id as string, token: new URL(body.privateLink).searchParams.get("k")! };
+    return { id: body.ticket.id as string, token: new URL(body.privateLink).searchParams.get("k") ?? "" };
   }
   const fetchImage = (id: string, query = "") =>
     image.GET(new Request(`http://t/api/tickets/${id}/image${query}`), { params: Promise.resolve({ id }) } as never);
 
   it("serves a public ticket's photo with its MIME type and a public cache header", async () => {
     const { id } = await reportWithPhoto(true);
-    const res = await fetchImage(id);
+    const res = await fetchImage(id.toLowerCase());
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/jpeg");
     expect(res.headers.get("cache-control")).toMatch(/^public/);
@@ -97,13 +118,18 @@ describe("GET /api/tickets/[id]/image", () => {
 
   it("builds signed URLs only for held tickets", () => {
     expect(workflow.photoUrl({ id: "CR-1" }, "before")).toBe("/api/tickets/CR-1/image?v=before");
+    expect(workflow.photoUrl({ id: "CR-1" }, "after", "2026-11-20")).toBe(
+      "/api/tickets/CR-1/image?v=after&t=2026-11-20",
+    );
     const held = workflow.photoUrl({ id: "CR-2", verification: "unverified" }, "before");
     expect(held).toContain(`s=${workflow.photoSignature("CR-2", "before")}`);
   });
 
   it("returns 404 for unknown tickets, bad ids and variants outside the allow-list", async () => {
     const { id } = await reportWithPhoto(true);
-    expect((await fetchImage(id, "?v=reopen")).status).toBe(404);
+    const missing = await fetchImage(id, "?v=reopen");
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: "Photo not found." });
     expect((await fetchImage("CR-404")).status).toBe(404);
     expect((await fetchImage("../secrets")).status).toBe(404);
     expect((await fetchImage(id, "?v=constructor")).status).toBe(404);

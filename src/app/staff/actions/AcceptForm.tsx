@@ -14,7 +14,7 @@ export default function AcceptForm({ busy, onUpdate }: { busy: boolean; onUpdate
 
   function accept(event: React.FormEvent) {
     event.preventDefault();
-    onUpdate({ action: "acknowledge", expectedFixDate: fixDate || undefined, note }, "accepted");
+    onUpdate({ action: "acknowledge", expectedFixDate: fixDate || null, note }, "accepted");
   }
 
   return (

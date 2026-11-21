@@ -32,28 +32,28 @@ export default function ResultCard({ result, onReportAnother }: { result: Report
         </p>
       )}
       <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-        <dt className="text-slate-500">{t("ticket.category")}</dt>
+        <dt className="text-slate-600">{t("ticket.category")}</dt>
         <dd>{t(`category.${ticket.category}`)}</dd>
-        <dt className="text-slate-500">{t("ticket.priority")}</dt>
+        <dt className="text-slate-600">{t("ticket.priority")}</dt>
         <dd className="flex flex-wrap items-center gap-2">
           <PriorityBadge priority={ticket.priority} />
           <span className="text-slate-600" lang="en">
             {ticket.priorityReason}
           </span>
         </dd>
-        <dt className="text-slate-500">{t("ticket.department")}</dt>
+        <dt className="text-slate-600">{t("ticket.department")}</dt>
         <dd lang="en">{ticket.department}</dd>
-        <dt className="text-slate-500">{t("ticket.status")}</dt>
+        <dt className="text-slate-600">{t("ticket.status")}</dt>
         <dd>
           <StatusBadge status={ticket.status} />
         </dd>
-        <dt className="text-slate-500">{t("ticket.language")}</dt>
+        <dt className="text-slate-600">{t("ticket.language")}</dt>
         <dd>{languageLabel(t, ticket.originalLanguage)}</dd>
-        <dt className="text-slate-500">{t("ticket.summary")}</dt>
+        <dt className="text-slate-600">{t("ticket.summary")}</dt>
         <dd lang="en">{ticket.englishSummary}</dd>
         {ticket.transcript && (
           <>
-            <dt className="text-slate-500">{t("ticket.transcript")}</dt>
+            <dt className="text-slate-600">{t("ticket.transcript")}</dt>
             <dd lang={ticket.originalLanguage} className="italic">
               {ticket.transcript}
             </dd>
@@ -61,7 +61,7 @@ export default function ResultCard({ result, onReportAnother }: { result: Report
         )}
       </dl>
       {result.aiSource === "fallback" && !result.unverified && (
-        <p className="mt-3 text-xs text-slate-500">{t("result.fallback")}</p>
+        <p className="mt-3 text-xs text-slate-600">{t("result.fallback")}</p>
       )}
       {/* The private link is shown once. It lets the citizen message the
           department and confirm the fix, with no account and no personal details. */}

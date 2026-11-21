@@ -1,5 +1,5 @@
 import { StatusBadge } from "@/components/badges";
-import { formatDateTime } from "@/lib/client/format";
+import { formatDateTime } from "@/lib/format";
 import type { Translate } from "@/lib/i18n";
 import type { HistoryEntry } from "@/lib/types";
 
@@ -21,7 +21,12 @@ export default function Timeline({ history, t }: { history?: HistoryEntry[]; t: 
                 {formatDateTime(entry.at)}
               </time>
             </div>
-            {entry.note && <p className="mt-1 text-sm text-slate-700">{entry.note}</p>}
+            {/* Notes are written by staff and the system, in English. */}
+            {entry.note && (
+              <p lang="en" className="mt-1 text-sm text-slate-700">
+                {entry.note}
+              </p>
+            )}
           </li>
         ))}
       </ol>

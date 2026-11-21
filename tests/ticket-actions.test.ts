@@ -2,7 +2,7 @@
 // schema that feeds them (src/lib/schemas.ts). Each action is a pure function,
 // so its rules are checked here without a database or a request.
 import { describe, expect, it } from "vitest";
-import { parseTicketAction } from "@/lib/schemas";
+import { TicketActionSchema } from "@/lib/schemas";
 import {
   acknowledgeTicket,
   addTicketNote,
@@ -51,39 +51,41 @@ function succeeded(result: ActionResult) {
   return result;
 }
 const lastHistory = (t: Ticket) => t.history?.at(-1);
+/** Parse a PATCH body the way the route does: the typed action, or null when it is rejected. */
+const parseAction = (body: unknown) => TicketActionSchema.safeParse(body).data ?? null;
 
-describe("parseTicketAction (PATCH body schema)", () => {
-  it("defaults to the admin update action when no action is named", () => {
-    expect(parseTicketAction({ status: "Resolved" })).toMatchObject({ action: "update", status: "Resolved", note: "" });
-    expect(parseTicketAction({ action: 7 })?.action).toBe("update");
-  });
-
-  it("rejects an unknown action", () => {
-    expect(parseTicketAction({ action: "delete" })).toBeNull();
+describe("TicketActionSchema (PATCH body schema)", () => {
+  it("rejects a body without a known action", () => {
+    expect(parseAction({ status: "Resolved" })).toBeNull();
+    expect(parseAction({ action: 7 })).toBeNull();
+    expect(parseAction({ action: "delete" })).toBeNull();
+    expect(parseAction(null)).toBeNull();
+    expect(parseAction({ action: "update", status: "Resolved" })).toMatchObject({ status: "Resolved", note: "" });
   });
 
   it("trims and caps the note, and ignores a note that is not text", () => {
-    expect(parseTicketAction({ action: "note", note: `  ${"x".repeat(600)}  ` })).toEqual({
+    expect(parseAction({ action: "note", note: `  ${"x".repeat(600)}  ` })).toEqual({
       action: "note",
       note: "x".repeat(500),
     });
-    expect(parseTicketAction({ action: "note", note: 42 })).toEqual({ action: "note", note: "" });
+    expect(parseAction({ action: "note", note: 42 })).toEqual({ action: "note", note: "" });
   });
 
   it("reads malformed fields as not provided, leaving the error to the action", () => {
-    expect(parseTicketAction({ action: "review", decision: "maybe" })).toMatchObject({ decision: null });
-    expect(parseTicketAction({ action: "acknowledge", expectedFixDate: "next week" })).toMatchObject({
+    expect(parseAction({ action: "review", decision: "maybe" })).toMatchObject({ decision: null });
+    expect(parseAction({ action: "acknowledge", expectedFixDate: "next week" })).toMatchObject({
       expectedFixDate: null,
     });
-    expect(parseTicketAction({ action: "acknowledge", expectedFixDate: "2026-12-01" })).toMatchObject({
+    expect(parseAction({ action: "acknowledge", expectedFixDate: "2026-12-01" })).toMatchObject({
       expectedFixDate: "2026-12-01",
     });
-    expect(parseTicketAction({ action: "transfer", department: "Parks" })).toMatchObject({ department: null });
-    expect(parseTicketAction({ action: "transfer" })).toMatchObject({ department: null });
+    expect(parseAction({ action: "transfer", department: "Parks" })).toMatchObject({ department: null });
+    expect(parseAction({ action: "transfer" })).toMatchObject({ department: null });
   });
 
   it("whitelists override values against the domain enums", () => {
-    const parsed = parseTicketAction({
+    const parsed = parseAction({
+      action: "update",
       status: "Closed",
       category: "Volcano",
       priority: "Urgent",
@@ -383,7 +385,7 @@ describe("updateTicket (admin overrides)", () => {
     expect(pinned).toMatchObject({ category: "Garbage", department: "Water Supply" });
 
     // An unknown department is dropped when the body is parsed, so the category's own department applies.
-    const parsed = parseTicketAction({ action: "update", category: "Garbage", department: "Parks" });
+    const parsed = parseAction({ action: "update", category: "Garbage", department: "Parks" });
     expect(parsed).toMatchObject({ department: undefined });
     if (parsed?.action !== "update") throw new Error("expected an update action");
     expect(succeeded(updateTicket(ticket(), parsed, as(ADMIN))).ticket).toMatchObject({

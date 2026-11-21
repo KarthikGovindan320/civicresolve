@@ -8,58 +8,63 @@
 // Staff never learn the citizen's identity: there's no name or phone number,
 // and the optional email is used only by the server to relay a notification.
 // Gemini translates each message: staff replies go into the citizen's language,
-// citizen replies into English.
+// citizen replies into English. The rules live in lib/services/messages.ts.
 // =============================================================================
 
 import { NextResponse } from "next/server";
-import { canActOn, isAdminRole, staffRole } from "@/lib/auth";
+import { authenticateStaff } from "@/lib/auth";
 import { translateMessage } from "@/lib/gemini";
-import { CITIZEN_KEY_HEADER, ERROR_MESSAGES, baseUrl, fail, readJsonBody } from "@/lib/http";
+import { CITIZEN_KEY_HEADER } from "@/lib/headers";
+import {
+  ERROR_MESSAGES,
+  baseUrl,
+  fail,
+  failWith,
+  findTicket,
+  readJsonBody,
+  spendBudget,
+  updateTicketAtomically,
+} from "@/lib/http";
 import { notifyReporters } from "@/lib/notify";
-import { clientIp, rateLimit } from "@/lib/security";
+import { MessageBodySchema } from "@/lib/schemas";
+import {
+  NOT_ALLOWED_TO_MESSAGE,
+  messageAuthor,
+  messageNotice,
+  postMessage,
+  translationTarget,
+} from "@/lib/services/messages";
 import { store } from "@/lib/store";
-import { LIMITS, type Message, type Role, type Ticket } from "@/lib/types";
-import { appendMessage, isReporter, makeMessage, toPrivate } from "@/lib/workflow";
+import { makeMessage, toPrivate } from "@/lib/workflow";
 
-/** Officials read and write English. */
-const STAFF_LANGUAGE = "en";
-
-/** Who is posting: responsible staff (by role), otherwise a holder of the ticket's private link, otherwise nobody. */
-function resolveAuthor(req: Request, ticket: Ticket, role: Role | null): Message["from"] | null {
-  if (role && canActOn(role, ticket)) return isAdminRole(role) ? "admin" : "department";
-  return isReporter(ticket, req.headers.get(CITIZEN_KEY_HEADER)) ? "citizen" : null;
-}
+/** Each message may call Gemini to translate it, so messages have their own budget. */
+const MESSAGE_BUDGET = { bucket: "msg", message: "Too many messages. Please wait a few minutes." };
 
 /** Post a message to a ticket's private conversation, translated for the other side. */
 export async function POST(req: Request, ctx: RouteContext<"/api/tickets/[id]/messages">) {
+  const overBudget = spendBudget(req, MESSAGE_BUDGET);
+  if (overBudget) return failWith(overBudget);
+  const staff = authenticateStaff(req);
+  if (!staff.ok) return failWith(staff);
+  const body = await readJsonBody(req, MessageBodySchema);
+  if (!body?.text) return fail(400, "Message is empty.");
+
   const { id } = await ctx.params;
   const db = store();
-  const ticket = await db.get(id);
+  const ticket = await findTicket(db, id);
   if (!ticket) return fail(404, ERROR_MESSAGES.ticketNotFound);
+  const poster = { role: staff.role, citizenToken: req.headers.get(CITIZEN_KEY_HEADER) };
+  const author = messageAuthor(ticket, poster);
+  if (!author) return fail(403, NOT_ALLOWED_TO_MESSAGE);
+  const origin = baseUrl(req);
 
-  const author = resolveAuthor(req, ticket, staffRole(req));
-  if (!author) return fail(403, "Not allowed to message on this ticket.");
-
-  // A separate rate-limit bucket for messages (each one may call Gemini).
-  if (!rateLimit(`msg:${clientIp(req)}`).ok) return fail(429, "Too many messages. Please wait a few minutes.");
-
-  const body = await readJsonBody(req);
-  const text = typeof body.text === "string" ? body.text.trim().slice(0, LIMITS.message) : "";
-  if (!text) return fail(400, "Message is empty.");
-
-  // Staff write → translate into the citizen's language; citizen writes → English.
-  const fromStaff = author !== "citizen";
-  const targetLanguage = fromStaff ? ticket.originalLanguage || STAFF_LANGUAGE : STAFF_LANGUAGE;
-  const { detectedLanguage, translation } = await translateMessage(text, targetLanguage);
-  const now = new Date().toISOString();
-  const message = makeMessage({ from: author, text, lang: detectedLanguage, translation }, now);
+  const { detectedLanguage, translation } = await translateMessage(body.text, translationTarget(ticket, author));
+  const message = makeMessage({ from: author, text: body.text, lang: detectedLanguage, translation });
   // Appended to the latest stored version, so two messages sent at once are both kept.
-  const updated = await db.update(ticket.id, (current) => appendMessage({ ...current, updatedAt: now }, message));
-  if (!updated) return fail(404, ERROR_MESSAGES.ticketNotFound);
-  if (fromStaff) {
-    // Email relay: the citizen gets the message (and its translation) by email.
-    const emailBody = translation ? `${text}\n\n${translation}` : text;
-    await notifyReporters(updated, "New message about your issue", emailBody, baseUrl(req));
-  }
-  return NextResponse.json(toPrivate(updated));
+  const result = await updateTicketAtomically(db, ticket.id, (current) => postMessage(current, message, poster));
+  if (!result.ok) return failWith(result);
+  // Email relay: the citizen gets a staff message (and its translation) by email.
+  const notice = messageNotice(message);
+  if (notice) await notifyReporters(result.ticket, notice.subject, notice.text, origin);
+  return NextResponse.json(toPrivate(result.ticket));
 }

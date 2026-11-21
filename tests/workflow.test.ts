@@ -1,7 +1,7 @@
 // Resolution workflow rules (src/lib/workflow.ts) and role-based
 // access control (src/lib/auth.ts).
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { canActOn, staffRole } from "@/lib/auth";
+import { canActOn, roleForPasscode } from "@/lib/auth";
 import type { Ticket } from "@/lib/types";
 import {
   isOverdue,
@@ -91,14 +91,12 @@ describe("audience views never leak private data", () => {
 
 describe("role-based access control", () => {
   afterEach(() => vi.unstubAllEnvs());
-  const req = (k: string) => new Request("http://x", { headers: { "x-staff-key": k } });
-
   it("maps passcodes to roles", () => {
     vi.stubEnv("ADMIN_PASSCODE", "adm");
     vi.stubEnv("DEPT_PASSCODES", JSON.stringify({ Sanitation: "san", "Water Supply": "wat" }));
-    expect(staffRole(req("adm"))).toEqual({ role: "admin" });
-    expect(staffRole(req("san"))).toEqual({ role: "department", department: "Sanitation" });
-    expect(staffRole(req("nope"))).toBeNull();
+    expect(roleForPasscode("adm")).toEqual({ role: "admin" });
+    expect(roleForPasscode("san")).toEqual({ role: "department", department: "Sanitation" });
+    expect(roleForPasscode("nope")).toBeNull();
   });
   it("lets a department act only on its own tickets; admin on all", () => {
     const roads = base();
@@ -109,9 +107,9 @@ describe("role-based access control", () => {
   });
   it("ignores unknown departments and malformed config (fails closed)", () => {
     vi.stubEnv("DEPT_PASSCODES", JSON.stringify({ "Ministry of Magic": "x" }));
-    expect(staffRole(req("x"))).toBeNull();
+    expect(roleForPasscode("x")).toBeNull();
     vi.stubEnv("DEPT_PASSCODES", "{not json");
     vi.stubEnv("NODE_ENV", "production");
-    expect(staffRole(req("roads123"))).toBeNull();
+    expect(roleForPasscode("roads123")).toBeNull();
   });
 });

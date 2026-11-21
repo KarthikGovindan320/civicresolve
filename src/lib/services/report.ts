@@ -17,7 +17,7 @@ import { formText } from "../http";
 import { log } from "../log";
 import { notifyReporters } from "../notify";
 import { normalizePhone, verifyOtp } from "../otp";
-import { failure, type Failure, type Result } from "../result";
+import { failure, rateLimited, type Failure, type Result } from "../result";
 import { effectivePriority, haversine, recomputePriority, safetyRuleHit, safetyScanText } from "../rules";
 import { rateLimit } from "../security";
 import type { Store } from "../store";
@@ -26,13 +26,14 @@ import {
   CATEGORY_DEPARTMENT,
   LIMITS,
   isHeld,
+  isOneOf,
   type Category,
   type Classification,
   type Department,
   type Reporter,
   type Ticket,
 } from "../types";
-import { parseEmail, readAudio, readImage } from "../uploads";
+import { readAudio, readImage } from "../uploads";
 import { appendHistory } from "../workflow";
 
 /**
@@ -45,10 +46,10 @@ export const DUPLICATE_RADIUS_M = 200;
 export const MAX_DUPLICATE_CANDIDATES = 5;
 /** Reports without phone verification: at most this many per device per rate-limit window. */
 export const MAX_UNVERIFIED_REPORTS = 3;
-/** Longest AI-failure reason copied into the logs. */
-const MAX_LOGGED_AI_ERROR_CHARS = 300;
 const MAX_LATITUDE = 90;
 const MAX_LONGITUDE = 180;
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const UNVERIFIED_PRIORITY_REASON =
   "Quick keyword-based guess (unverified reports are not sent to AI); confirmed on admin review.";
@@ -87,21 +88,24 @@ export interface Triage {
  * details with a wrong code are refused, never silently downgraded.
  */
 export function verifyReporter(form: FormData, ip: string): Result<{ phone: string | null }> {
-  const wantsVerification = Boolean(form.get("phone") || form.get("otp") || form.get("otpChallenge"));
-  if (!wantsVerification) {
+  const [rawPhone, code, challenge] = [formText(form, "phone"), formText(form, "otp"), formText(form, "otpChallenge")];
+  if (!rawPhone && !code && !challenge) {
     // Unverified reports get a much tighter budget per device.
-    if (!rateLimit(`unverified:${ip}`, Date.now(), MAX_UNVERIFIED_REPORTS).ok)
-      return failure(429, "Too many unverified reports from this device. Verify your phone number to continue.");
+    const limit = rateLimit(`unverified:${ip}`, { max: MAX_UNVERIFIED_REPORTS });
+    if (!limit.ok)
+      return rateLimited(
+        "Too many unverified reports from this device. Verify your phone number to continue.",
+        limit.retryAfterSec,
+      );
     return { ok: true, phone: null };
   }
-  const phone = normalizePhone(String(form.get("phone") ?? ""));
-  const code = String(form.get("otp") ?? "").trim();
-  const challenge = String(form.get("otpChallenge") ?? "");
+  const phone = normalizePhone(rawPhone);
   if (!phone || !verifyOtp(phone, code, challenge)) return failure(401, "That code is incorrect or has expired.");
   // A second budget per verified number: rotating IP addresses doesn't help a
   // spammer who has to keep using the same phone.
-  if (!rateLimit(`phone:${phone}`).ok)
-    return failure(429, "Too many reports from this phone number. Please try again later.");
+  const limit = rateLimit(`phone:${phone}`);
+  if (!limit.ok)
+    return rateLimited("Too many reports from this phone number. Please try again later.", limit.retryAfterSec);
   return { ok: true, phone };
 }
 
@@ -122,9 +126,19 @@ export function isValidLocation(lat: number, lng: number): boolean {
   );
 }
 
+/**
+ * Parse an optional email: null when blank, "invalid" when it doesn't look like
+ * one. Deliberately permissive: one @, a dot in the domain, no spaces, max length.
+ */
+export function parseEmail(raw: string): string | null | "invalid" {
+  const email = raw.trim().toLowerCase();
+  if (!email) return null;
+  return email.length <= LIMITS.email && EMAIL_PATTERN.test(email) ? email : "invalid";
+}
+
 /** The citizen's category choice, accepted only if it is a known value. */
 export function parseUserCategory(raw: string): Category | null {
-  return CATEGORIES.includes(raw as Category) ? (raw as Category) : null;
+  return isOneOf(CATEGORIES, raw) ? raw : null;
 }
 
 /**
@@ -208,7 +222,8 @@ export async function classifyReport(report: ReportInput, verified: boolean): Pr
   }
   const { result: classification, source, error } = await classifyIssue({ title, description, address, image, audio });
   // A structured log line, filterable in Cloud Logging (event="ai_fallback").
-  if (error) log.warn("ai_fallback", { reason: error.slice(0, MAX_LOGGED_AI_ERROR_CHARS) });
+  // `error` is already a short, log-safe description (see describeError).
+  if (error) log.warn("ai_fallback", { reason: error });
   return { classification, source, ...resolveRouting(classification, source, report.userCategory) };
 }
 

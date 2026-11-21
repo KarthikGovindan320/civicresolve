@@ -5,16 +5,24 @@
 // input crossing a trust boundary: it is parsed, not cast. A record that does
 // not match the domain model (a hand-edited file, a half-written document, data
 // from an older version) is rejected at the store instead of failing somewhere
-// deep in a page render. Each schema is checked against the TypeScript type it
-// produces (`satisfies z.ZodType<…>`), so the two can never drift apart.
+// deep in a page render. Every enum comes from the same constant array as the
+// domain type in types.ts, and each schema is checked with
+// `satisfies z.ZodType<…>`: the compiler rejects a schema whose output is not
+// assignable to its type (a missing required field, a wrong field type). It
+// cannot notice a new optional field the schema leaves out, so such a field
+// must be added here too.
 // =============================================================================
 import { z } from "zod";
-import { VERIFICATION_VERDICTS } from "./ai/prompts";
 import {
+  AI_VERDICTS,
   CATEGORIES,
+  CITIZEN_CONFIRMATIONS,
+  CLASSIFIED_BY,
   DEPARTMENTS,
+  MESSAGE_AUTHORS,
   PRIORITIES,
   STATUSES,
+  VERIFICATIONS,
   type HistoryEntry,
   type Message,
   type Reporter,
@@ -30,7 +38,7 @@ const HistoryEntrySchema = z.object({
 
 const MessageSchema = z.object({
   id: z.string(),
-  from: z.enum(["citizen", "department", "admin", "system"]),
+  from: z.enum(MESSAGE_AUTHORS),
   text: z.string(),
   lang: z.string(),
   translation: z.string().nullish(),
@@ -47,7 +55,7 @@ const ReporterSchema = z.object({
 const ResolutionSchema = z.object({
   note: z.string(),
   hasPhoto: z.boolean(),
-  aiVerdict: z.enum(VERIFICATION_VERDICTS),
+  aiVerdict: z.enum(AI_VERDICTS),
   aiReason: z.string(),
   by: z.string(),
   at: z.string(),
@@ -75,16 +83,16 @@ export const TicketRecordSchema = z.object({
   adminNotes: z.array(z.string()),
   hasImage: z.boolean(),
   history: z.array(HistoryEntrySchema).optional(),
-  classifiedBy: z.enum(["gemini", "fallback", "seed"]).optional(),
+  classifiedBy: z.enum(CLASSIFIED_BY).optional(),
   acknowledgedAt: z.string().nullish(),
   expectedFixDate: z.string().nullish(),
   transfers: z.number().int().min(0).optional(),
   messages: z.array(MessageSchema).optional(),
   reporters: z.array(ReporterSchema).optional(),
   resolution: ResolutionSchema.nullish(),
-  citizenConfirmation: z.enum(["pending", "confirmed", "reopened", "auto-closed"]).nullish(),
+  citizenConfirmation: z.enum(CITIZEN_CONFIRMATIONS).nullish(),
   reopenCount: z.number().int().min(0).optional(),
-  verification: z.enum(["phone", "unverified", "approved", "rejected"]).optional(),
+  verification: z.enum(VERIFICATIONS).optional(),
   hasReopenPhoto: z.boolean().optional(),
 }) satisfies z.ZodType<Ticket>;
 

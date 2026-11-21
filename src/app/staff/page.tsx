@@ -2,12 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { FixedLanguage } from "@/components/I18nProvider";
-import { staffRequest } from "@/lib/client/api";
+import { settle, staffRequest } from "@/lib/client/api";
 import Dashboard from "./Dashboard";
 import Login from "./Login";
 import type { Session } from "./types";
 
 const STAFF_KEY_STORAGE = "civic-staff-key";
+
+/** Shown when sign-in fails without a message from the server (the staff portal is English-only). */
+const SIGN_IN_FAILURE = { failed: "Wrong passcode.", network: "Network error. Please try again." };
 
 /** The saved passcode never changes behind our back within a tab, so there is nothing to subscribe to. */
 const subscribeToNothing = () => () => {};
@@ -29,18 +32,20 @@ export default function StaffPage() {
   const [staffKey, setStaffKey] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
 
-  // The server verifies the passcode before the dashboard renders. It is kept
-  // only in sessionStorage, which is cleared when the tab closes; storage can
-  // be unavailable (private mode), in which case sign-in simply isn't remembered.
+  // The server verifies the passcode before the dashboard renders, and its
+  // message (wrong passcode, too many attempts) is shown as it is. The passcode
+  // is kept only in sessionStorage, which is cleared when the tab closes;
+  // storage can be unavailable (private mode), in which case sign-in simply
+  // isn't remembered. Resolves to the error to show, or null once signed in.
   const signIn = useCallback(async (passcode: string) => {
-    const result = await staffRequest<Session>("/api/staff/session", passcode);
-    if (!result.ok) return false;
-    setSession(result.data);
+    const outcome = await settle(staffRequest<Session>("/api/staff/session", passcode), SIGN_IN_FAILURE);
+    if (!outcome.ok) return outcome.error;
+    setSession(outcome.data);
     setStaffKey(passcode);
     try {
       sessionStorage.setItem(STAFF_KEY_STORAGE, passcode);
     } catch {}
-    return true;
+    return null;
   }, []);
 
   function signOut() {

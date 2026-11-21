@@ -3,23 +3,20 @@
 import "leaflet/dist/leaflet.css";
 import { useEffect } from "react";
 import { CircleMarker, MapContainer, Popup, TileLayer, useMap, useMapEvents } from "react-leaflet";
-import type { PublicTicket } from "@/lib/types";
+import { CITY_CENTRE } from "@/lib/constants";
+import type { Coordinates, PublicTicket } from "@/lib/types";
 import { useT } from "./I18nProvider";
 import { PRIORITY_COLOR, RESOLVED_COLOR } from "./badges";
 import { DEFAULT_MAP_HEIGHT } from "./ui";
-
-interface Coordinates {
-  lat: number;
-  lng: number;
-}
-
-/** Where the map opens when no location is given: the centre of Vellore. */
-export const VELLORE: Coordinates = { lat: 12.9165, lng: 79.1325 };
 
 /** Zoom level close enough to tell neighbouring streets apart when jumping to a picked location. */
 const STREET_ZOOM = 15;
 
 export interface MapViewProps {
+  /** Accessible name of the map, which is a keyboard stop: what it shows, or what to do with it. */
+  label: string;
+  /** Id of the text that explains how to use the map from the keyboard, if the page shows one. */
+  describedBy?: string;
   /** Issues to plot as priority-coloured circles. */
   tickets?: PublicTicket[];
   /** The location chosen on the report form, shown as a blue pin. */
@@ -53,6 +50,21 @@ function PickHandler({ onPick }: { onPick: MapViewProps["onPick"] }) {
   return null;
 }
 
+/**
+ * Names Leaflet's map container. It is the element that takes keyboard focus,
+ * so it, not a wrapper, must carry the name and the keyboard help (WCAG 4.1.2).
+ */
+function ContainerLabel({ label, describedBy }: Pick<MapViewProps, "label" | "describedBy">) {
+  const container = useMap().getContainer();
+  useEffect(() => {
+    container.setAttribute("role", "region");
+    container.setAttribute("aria-label", label);
+    if (describedBy) container.setAttribute("aria-describedby", describedBy);
+    else container.removeAttribute("aria-describedby");
+  }, [container, label, describedBy]);
+  return null;
+}
+
 /** Moves the map to a newly picked location (from GPS or address search), zooming in if needed. */
 function Recenter({ target }: { target?: Coordinates | null }) {
   const map = useMap();
@@ -72,6 +84,8 @@ function Recenter({ target }: { target?: Coordinates | null }) {
  *     and most-reported problems stand out at a glance.
  */
 export default function MapView({
+  label,
+  describedBy,
   tickets = [],
   picked,
   onPick,
@@ -80,7 +94,7 @@ export default function MapView({
   zoom = 13,
 }: MapViewProps) {
   const t = useT();
-  const initialCentre = center ?? picked ?? VELLORE;
+  const initialCentre = center ?? picked ?? CITY_CENTRE;
   return (
     <div className="relative">
       <MapContainer
@@ -95,6 +109,7 @@ export default function MapView({
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
+        <ContainerLabel label={label} describedBy={describedBy} />
         {onPick && <PickHandler onPick={onPick} />}
         {onPick && <Recenter target={picked} />}
         {tickets.map((ticket) => (
@@ -112,7 +127,7 @@ export default function MapView({
             }}
           >
             <Popup>
-              <strong>{ticket.title}</strong>
+              <strong lang={ticket.originalLanguage}>{ticket.title}</strong>
               <br />
               {t(`category.${ticket.category}`)} · {t(`priority.${ticket.priority}`)} · {t(`status.${ticket.status}`)}
               <br />

@@ -1,3 +1,4 @@
+import Interpolate from "@/components/Interpolate";
 import type { Translate } from "@/lib/i18n";
 import type { Verification } from "@/lib/types";
 
@@ -20,7 +21,7 @@ export default function TicketNotices({
     <>
       {verification === "unverified" && (
         <p role="status" className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          {t("ticket.heldNotice", { department })}
+          <Interpolate message={t("ticket.heldNotice")} values={{ department: <span lang="en">{department}</span> }} />
         </p>
       )}
       {verification === "rejected" && (

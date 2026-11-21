@@ -8,17 +8,18 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { parseStoredImage, parseTicket } from "@/lib/records";
-import { fmtDay } from "@/lib/types";
 
 let dir = "";
+const createdDirs: string[] = [];
 const ticketsFile = () => path.join(dir, "tickets.json");
 const globalWithStore: typeof globalThis & { __civicStore?: unknown } = globalThis;
 
 /** A brand-new FileStore over an empty temporary data directory. */
 async function freshStore() {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "civic-store-"));
+  createdDirs.push(dir);
   process.env.DATA_DIR = dir;
   process.env.STORE = "file";
   globalWithStore.__civicStore = undefined;
@@ -29,6 +30,9 @@ async function freshStore() {
 beforeEach(() => {
   globalWithStore.__civicStore = undefined;
 });
+afterAll(() => {
+  for (const created of createdDirs) fs.rmSync(created, { recursive: true, force: true });
+});
 
 describe("FileStore resilience", () => {
   it("re-creates a deleted data directory instead of failing every later write", async () => {
@@ -38,12 +42,16 @@ describe("FileStore resilience", () => {
 
     fs.rmSync(dir, { recursive: true, force: true }); // simulate ./data being wiped under a live server
 
-    await expect(db.put({ ...t, title: "edited after wipe" })).resolves.toBeUndefined();
+    await expect(db.update(t.id, (current) => ({ ...current, title: "edited after wipe" }))).resolves.toMatchObject({
+      title: "edited after wipe",
+    });
     const onDisk = JSON.parse(fs.readFileSync(path.join(dir, "tickets.json"), "utf8"));
     expect(onDisk.find((x: { id: string }) => x.id === t.id).title).toBe("edited after wipe");
 
     // And a failure must never poison the write queue: the next write still succeeds.
-    await expect(db.put({ ...t, title: "second write" })).resolves.toBeUndefined();
+    await expect(db.update(t.id, (current) => ({ ...current, title: "second write" }))).resolves.toMatchObject({
+      title: "second write",
+    });
   });
 
   it("refuses to start from a corrupt file instead of overwriting it with demo data", async () => {
@@ -114,12 +122,5 @@ describe("stored-record schema", () => {
   it("accepts only photos with a type and data", () => {
     expect(parseStoredImage({ mimeType: "image/jpeg", data: "abc" })).toEqual({ mimeType: "image/jpeg", data: "abc" });
     expect(parseStoredImage({ data: "abc" })).toBeNull();
-  });
-});
-
-describe("fmtDay", () => {
-  it("formats a plain ISO day in a human style, independent of server timezone", () => {
-    expect(fmtDay("2026-11-24")).toBe("24 Nov 2026");
-    expect(fmtDay("2026-01-05")).toBe("5 Jan 2026");
   });
 });

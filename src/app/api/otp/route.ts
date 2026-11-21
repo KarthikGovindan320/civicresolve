@@ -7,27 +7,30 @@
 // The phone number is never written to logs.
 // =============================================================================
 import { NextResponse } from "next/server";
-import { NO_STORE_HEADERS, fail, readJsonBody } from "@/lib/http";
+import { NO_STORE_HEADERS, fail, failWith, readJsonBody, spendBudget, tooManyRequests } from "@/lib/http";
 import { log } from "@/lib/log";
 import { OTP_TTL_MINUTES, demoCodesAllowed, issueOtp, normalizePhone, sendSms, smsEnabled } from "@/lib/otp";
-import { clientIp, rateLimit } from "@/lib/security";
+import { OtpRequestSchema } from "@/lib/schemas";
+import { rateLimit } from "@/lib/security";
+
+const TOO_MANY_CODES = "Too many codes requested. Please wait a few minutes.";
 
 /** Issue a one-time code and the signed challenge the report form must send back with it. */
 export async function POST(req: Request) {
-  const body = await readJsonBody(req);
-  const phone = normalizePhone(String(body.phone ?? ""));
-  if (!phone) return fail(400, "Enter a valid 10-digit Indian mobile number.");
-
-  // Two independent buckets: one device can't request codes for many numbers,
+  // Two independent budgets: one device can't request codes for many numbers,
   // and one number can't be bombarded with codes from many devices.
-  for (const bucket of [`otp-ip:${clientIp(req)}`, `otp-phone:${phone}`]) {
-    const limit = rateLimit(bucket);
-    if (!limit.ok) {
-      log.warn("otp_rate_limited");
-      return fail(429, "Too many codes requested. Please wait a few minutes.", {
-        "Retry-After": String(limit.retryAfterSec),
-      });
-    }
+  const overBudget = spendBudget(req, { bucket: "otp-ip", message: TOO_MANY_CODES });
+  if (overBudget) {
+    log.warn("otp_rate_limited");
+    return failWith(overBudget);
+  }
+  const body = await readJsonBody(req, OtpRequestSchema);
+  const phone = body && normalizePhone(body.phone);
+  if (!phone) return fail(400, "Enter a valid 10-digit Indian mobile number.");
+  const phoneLimit = rateLimit(`otp-phone:${phone}`);
+  if (!phoneLimit.ok) {
+    log.warn("otp_rate_limited");
+    return tooManyRequests(phoneLimit, TOO_MANY_CODES);
   }
 
   // Fail closed: with neither an SMS gateway nor demo codes switched on, no code is issued at all.

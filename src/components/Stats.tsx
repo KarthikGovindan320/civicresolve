@@ -1,9 +1,8 @@
 "use client";
 
+import { HOUR_MS } from "@/lib/constants";
 import type { PublicTicket } from "@/lib/types";
 import { useT } from "./I18nProvider";
-
-const MS_PER_HOUR = 36e5;
 
 const isOpen = (ticket: PublicTicket) => ticket.status !== "Resolved";
 type ResolvedTicket = PublicTicket & { resolvedAt: string };
@@ -25,7 +24,7 @@ function averageHoursToFix(resolved: ResolvedTicket[]): number {
     (sum, ticket) => sum + (Date.parse(ticket.resolvedAt) - Date.parse(ticket.createdAt)),
     0,
   );
-  return totalMs / resolved.length / MS_PER_HOUR;
+  return totalMs / resolved.length / HOUR_MS;
 }
 
 /** Per-department workload and performance, worst backlog first. */
@@ -81,7 +80,7 @@ export default function Stats({ tickets }: { tickets: PublicTicket[] }) {
         <Tile label={t("stats.onTime")} value={allOnTime === null ? "–" : `${allOnTime}%`} />
       </div>
       <div className="rounded-lg bg-white p-4 ring-1 ring-slate-200">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-slate-600">{t("stats.departments")}</h3>
+        <h2 className="text-xs font-medium uppercase tracking-wide text-slate-600">{t("stats.departments")}</h2>
         {/* On a phone each department becomes a small block (name, then its numbers) so long
             translated labels never push the table off screen. The explicit roles keep it a
             table for screen readers even where the rows are laid out with flexbox. */}

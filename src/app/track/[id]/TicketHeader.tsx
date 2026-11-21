@@ -1,5 +1,5 @@
 import { OverdueBadge, PriorityBadge, StatusBadge } from "@/components/badges";
-import { formatDateTime } from "@/lib/client/format";
+import { formatDateTime } from "@/lib/format";
 import type { Translate } from "@/lib/i18n";
 import type { PublicTicket } from "@/lib/types";
 
@@ -9,7 +9,9 @@ export default function TicketHeader({ ticket, t }: { ticket: PublicTicket; t: T
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
         <p className="font-mono text-sm text-slate-600">{ticket.id}</p>
-        <h1 className="text-2xl font-semibold">{ticket.title}</h1>
+        <h1 lang={ticket.originalLanguage} className="text-2xl font-semibold">
+          {ticket.title}
+        </h1>
         <p className="text-sm text-slate-600">
           {ticket.location.address || t("common.pinnedLocation")} ·{" "}
           {t("ticket.reportedAt", { when: formatDateTime(ticket.createdAt) })}

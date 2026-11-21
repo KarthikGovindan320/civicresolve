@@ -23,14 +23,14 @@
 // =============================================================================
 import "server-only";
 import { createHmac, randomInt } from "crypto";
+import { MINUTE_MS, OTP_DIGITS } from "./constants";
 import { signingSecret } from "./secrets";
 import { safeEqual } from "./security";
 
 /** How long a one-time code stays valid. */
-export const OTP_TTL_MS = 5 * 60_000;
-export const OTP_TTL_MINUTES = OTP_TTL_MS / 60_000;
+export const OTP_TTL_MINUTES = 5;
+export const OTP_TTL_MS = OTP_TTL_MINUTES * MINUTE_MS;
 
-const OTP_DIGITS = 6;
 const OTP_PATTERN = new RegExp(`^\\d{${OTP_DIGITS}}$`);
 const INDIA_COUNTRY_CODE = "91";
 /** Indian mobile numbers: ten digits, starting 6-9. */
@@ -56,7 +56,7 @@ const otpSecret = () => signingSecret("OTP_SECRET", "LINK_SECRET");
  * value, so they count as one person for rate limiting and traceability.
  */
 export function normalizePhone(raw: string): string | null {
-  let digits = String(raw ?? "").replace(/[\s\-()]/g, "");
+  let digits = raw.replace(/[\s\-()]/g, "");
   if (digits.startsWith(`+${INDIA_COUNTRY_CODE}`)) digits = digits.slice(3);
   else if (digits.length === 12 && digits.startsWith(INDIA_COUNTRY_CODE)) digits = digits.slice(2);
   else if (digits.length === 11 && digits.startsWith("0")) digits = digits.slice(1);
@@ -77,7 +77,7 @@ export function issueOtp(phone: string, now = Date.now()): { code: string; chall
 
 /** True only if `code` is the code issued for `phone` and it hasn't expired. Constant-time compare. */
 export function verifyOtp(phone: string, code: string, challenge: string, now = Date.now()): boolean {
-  const [expiryText, signature] = String(challenge ?? "").split(".");
+  const [expiryText, signature] = challenge.split(".");
   const expiresAt = Number(expiryText);
   if (!signature || !Number.isFinite(expiresAt) || expiresAt < now || expiresAt > now + OTP_TTL_MS) return false;
   if (!OTP_PATTERN.test(code)) return false;

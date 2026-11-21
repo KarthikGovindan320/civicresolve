@@ -13,8 +13,21 @@ import {
 import { en } from "@/lib/i18n/en";
 import { hi } from "@/lib/i18n/hi";
 import { languageFromHeader, PREFERENCE_COOKIES, preferenceCookie, readPreferences } from "@/lib/i18n/preferences";
+import { getPreferences, getTranslator } from "@/lib/i18n/server";
 import { ta } from "@/lib/i18n/ta";
 import { CATEGORIES, LIMITS, PRIORITIES, STATUSES } from "@/lib/types";
+
+// The request a server component sees: its cookies and its Accept-Language header.
+const request = vi.hoisted(() => ({ cookies: new Map<string, string>(), acceptLanguage: null as string | null }));
+vi.mock("next/headers", () => ({
+  cookies: async () => ({
+    get: (name: string) => {
+      const value = request.cookies.get(name);
+      return value === undefined ? undefined : { name, value };
+    },
+  }),
+  headers: async () => new Headers(request.acceptLanguage ? { "accept-language": request.acceptLanguage } : {}),
+}));
 
 const placeholders = (text: string) => [...text.matchAll(/\{(\w+)\}/g)].map((match) => match[1]).sort();
 const keys = Object.keys(en) as MessageKey[];
@@ -159,5 +172,31 @@ describe("sample reports", () => {
     expect(sampleAt(count - 1)).toBe(SAMPLE_REPORTS[count - 1]);
     expect(sampleAt(count)).toBe(SAMPLE_REPORTS[0]);
     expect(sampleAt(count + 1)).toBe(SAMPLE_REPORTS[1]);
+  });
+});
+
+describe("server-side preferences", () => {
+  afterEach(() => {
+    request.cookies.clear();
+    request.acceptLanguage = null;
+  });
+
+  it("uses the saved language cookie over the browser's languages", async () => {
+    request.cookies.set(PREFERENCE_COOKIES.lang, "ta");
+    request.acceptLanguage = "hi-IN,hi;q=0.9";
+    expect((await getPreferences()).lang).toBe("ta");
+    expect((await getTranslator())("nav.track")).toBe(ta["nav.track"]);
+  });
+
+  it("falls back to the first supported Accept-Language, then to English", async () => {
+    request.acceptLanguage = "fr-FR,hi;q=0.8";
+    expect((await getPreferences()).lang).toBe("hi");
+    request.acceptLanguage = null;
+    expect((await getPreferences()).lang).toBe("en");
+  });
+
+  it("reads the display aids from their cookies", async () => {
+    request.cookies.set(PREFERENCE_COOKIES.highContrast, "high");
+    expect(await getPreferences()).toMatchObject({ highContrast: true, largeText: false });
   });
 });

@@ -11,7 +11,7 @@ export default function StatusSteps({ status: current, t }: { status: Status; t:
           key={status}
           aria-current={step === currentStep ? "step" : undefined}
           className={`flex items-center justify-center rounded-md px-2 py-2 text-center text-sm font-medium ${
-            step <= currentStep ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-700"
+            step <= currentStep ? "bg-emerald-700 text-white" : "bg-slate-200 text-slate-700"
           }`}
         >
           {t(`status.${status}`)}

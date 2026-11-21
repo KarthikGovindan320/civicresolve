@@ -3,8 +3,9 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useT } from "@/components/I18nProvider";
+import Interpolate from "@/components/Interpolate";
 import MessageThread from "@/components/MessageThread";
-import { citizenRequest } from "@/lib/client/api";
+import { citizenRequest, failureMessages, settle } from "@/lib/client/api";
 import { downscaleSelected } from "@/lib/client/image";
 import { LIMITS, type PrivateTicket } from "@/lib/types";
 
@@ -24,17 +25,19 @@ export default function CitizenPanel({ ticket, token }: { ticket: PrivateTicket;
   const [photo, setPhoto] = useState<Blob | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Announced once a decision is saved: the question it answered disappears when the page refreshes.
+  const [notice, setNotice] = useState("");
   const awaitingConfirmation = ticket.status === "Resolved" && ticket.citizenConfirmation !== "confirmed";
   const ticketPath = `/api/tickets/${ticket.id}`;
 
   /** Sends a message to the department. Returns an error message, or null on success. */
   async function sendMessage(text: string): Promise<string | null> {
-    const result = await citizenRequest<PrivateTicket>(`${ticketPath}/messages`, token, {
-      method: "POST",
-      json: { text },
-    });
-    if (!result.ok) return result.error ?? t("chat.error.send");
-    setMessages(result.data.messages);
+    const outcome = await settle(
+      citizenRequest<PrivateTicket>(`${ticketPath}/messages`, token, { method: "POST", json: { text } }),
+      failureMessages(t, "chat.error.send"),
+    );
+    if (!outcome.ok) return outcome.error;
+    setMessages(outcome.data.messages);
     return null;
   }
 
@@ -45,9 +48,13 @@ export default function CitizenPanel({ ticket, token }: { ticket: PrivateTicket;
     form.set("note", note);
     if (photo) form.set("photo", photo, "photo.jpg");
     setBusy(true);
-    const result = await citizenRequest<PrivateTicket>(`${ticketPath}/confirm`, token, { method: "POST", form });
+    const outcome = await settle(
+      citizenRequest<PrivateTicket>(`${ticketPath}/confirm`, token, { method: "POST", form }),
+      failureMessages(t),
+    );
     setBusy(false);
-    if (!result.ok) return setError(result.error ?? t("common.error.generic"));
+    if (!outcome.ok) return setError(outcome.error);
+    setNotice(t(decision === "confirm" ? "panel.confirmed" : "panel.reopened"));
     router.refresh(); // re-render the server page with the new status and timeline
   }
 
@@ -59,6 +66,9 @@ export default function CitizenPanel({ ticket, token }: { ticket: PrivateTicket;
         </h2>
         <p className="text-sm text-slate-600">{t("panel.intro")}</p>
       </div>
+      <p role="status" className="sr-only">
+        {notice}
+      </p>
 
       {awaitingConfirmation && (
         <div className="rounded-md bg-amber-50 p-4 ring-1 ring-amber-200">
@@ -68,7 +78,7 @@ export default function CitizenPanel({ ticket, token }: { ticket: PrivateTicket;
               <button
                 disabled={busy}
                 onClick={() => decide("confirm")}
-                className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
               >
                 {t("panel.yes")}
               </button>
@@ -116,7 +126,11 @@ export default function CitizenPanel({ ticket, token }: { ticket: PrivateTicket;
                 >
                   {busy ? t("common.sending") : t("panel.reopen")}
                 </button>
-                <button type="button" onClick={() => setReopening(false)} className="text-sm underline">
+                <button
+                  type="button"
+                  onClick={() => setReopening(false)}
+                  className="inline-flex min-h-6 items-center text-sm underline"
+                >
                   {t("panel.cancel")}
                 </button>
               </div>
@@ -134,8 +148,18 @@ export default function CitizenPanel({ ticket, token }: { ticket: PrivateTicket;
       )}
 
       <div>
-        <h3 className="mb-2 text-sm font-semibold">{t("panel.messagesWith", { department: ticket.department })}</h3>
-        <MessageThread messages={messages} viewer="citizen" onSend={sendMessage} />
+        <h3 className="mb-2 text-sm font-semibold">
+          <Interpolate
+            message={t("panel.messagesWith")}
+            values={{ department: <span lang="en">{ticket.department}</span> }}
+          />
+        </h3>
+        <MessageThread
+          messages={messages}
+          viewer="citizen"
+          citizenLanguage={ticket.originalLanguage}
+          onSend={sendMessage}
+        />
       </div>
     </section>
   );

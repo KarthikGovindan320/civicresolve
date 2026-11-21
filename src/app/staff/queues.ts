@@ -2,7 +2,7 @@ import { PRIORITIES, isHeld, isPendingReview } from "@/lib/types";
 import type { StaffTicket } from "./types";
 
 /**
- * The work queues shown as tabs on the staff dashboard. Tickets move through
+ * The work queues the staff dashboard switches between. Tickets move through
  * them by stage (to accept, in progress, awaiting citizen, closed), with
  * Overdue cutting across stages. Escalations and Unverified are for the city
  * admin only.
@@ -39,9 +39,11 @@ export type QueueKey = keyof typeof QUEUES;
 /** Queues that only the city admin sees. */
 const ADMIN_ONLY_QUEUES: readonly QueueKey[] = ["escalations", "review"];
 
-/** The queue tabs available to a role, in display order. */
+/** The queues available to a role, in display order. */
 export const queuesFor = (isAdmin: boolean) =>
-  (Object.keys(QUEUES) as QueueKey[]).filter((queue) => isAdmin || !ADMIN_ONLY_QUEUES.includes(queue));
+  Object.keys(QUEUES)
+    .filter((key): key is QueueKey => Object.hasOwn(QUEUES, key))
+    .filter((queue) => isAdmin || !ADMIN_ONLY_QUEUES.includes(queue));
 
 /**
  * Whether a ticket belongs in a queue. Held reports appear only in the review

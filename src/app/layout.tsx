@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { I18nProvider } from "@/components/I18nProvider";
-import { SiteFooter, SiteHeader } from "@/components/SiteHeader";
+import SiteFooter from "@/components/SiteFooter";
+import SiteHeader from "@/components/SiteHeader";
 import { HIGH_CONTRAST_VALUE, LARGE_TEXT_VALUE } from "@/lib/i18n/preferences";
 import { getPreferences } from "@/lib/i18n/server";
 import "./globals.css";
@@ -10,7 +11,8 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "CivicResolve",
+  // Each page names itself first, then the site (WCAG 2.4.2).
+  title: { default: "CivicResolve", template: "%s · CivicResolve" },
   description: "Report civic issues in any language. AI routes them to the right department.",
 };
 

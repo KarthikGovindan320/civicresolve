@@ -9,7 +9,7 @@
 // Secrets and citizens' personal data are never passed to these functions.
 // =============================================================================
 
-type Severity = "DEBUG" | "INFO" | "WARNING" | "ERROR";
+type Severity = "INFO" | "WARNING" | "ERROR";
 type LogFields = Record<string, unknown>;
 
 function write(severity: Severity, event: string, fields: LogFields = {}) {

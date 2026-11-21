@@ -15,10 +15,10 @@
 // =============================================================================
 
 import { NextResponse } from "next/server";
-import { canActOn, isAdminRole, staffRole } from "@/lib/auth";
-import { ERROR_MESSAGES, NO_STORE_HEADERS, baseUrl, fail, failWith, readFormData } from "@/lib/http";
+import { authenticateStaff, canActOn, isAdminRole } from "@/lib/auth";
+import { NO_STORE_HEADERS, baseUrl, failWith, readFormData, spendBudget } from "@/lib/http";
 import { log } from "@/lib/log";
-import { clientIp, rateLimit } from "@/lib/security";
+import { clientIp } from "@/lib/security";
 import {
   classifyReport,
   createTicket,
@@ -31,13 +31,25 @@ import { store } from "@/lib/store";
 import { isHeld, isPendingReview } from "@/lib/types";
 import { newReporter, privateLink, toPrivate, toPublic } from "@/lib/workflow";
 
+/** The public list is cheap to ask for but reads every ticket: a generous budget per anonymous client. */
+const PUBLIC_LIST_BUDGET = { bucket: "ticket-list", max: 300 };
+const REPORT_BUDGET = {
+  bucket: "report",
+  message: "Too many reports from this device. Please try again in a few minutes.",
+};
+
 /**
  * List tickets, newest first. The output is role-aware: the public gets public
  * views only; staff also get the conversation for tickets they are responsible
  * for. Reporter identities (link secrets, emails) are never included for anyone.
  */
 export async function GET(req: Request) {
-  const role = staffRole(req);
+  const staff = authenticateStaff(req);
+  if (!staff.ok) return failWith(staff);
+  const { role } = staff;
+  const overBudget = role ? null : spendBudget(req, PUBLIC_LIST_BUDGET);
+  if (overBudget) return failWith(overBudget);
+
   const tickets = await store().list();
   tickets.sort((older, newer) => newer.createdAt.localeCompare(older.createdAt));
   // Held (unverified / rejected) reports never reach the public or departments;
@@ -54,19 +66,17 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   // Rate limit per client IP before doing any work, so a flood of requests
   // can't exhaust the Gemini quota or fill the database.
-  const ip = clientIp(req);
-  const limit = rateLimit(ip);
-  if (!limit.ok) {
+  const overBudget = spendBudget(req, REPORT_BUDGET);
+  if (overBudget) {
     log.warn("rate_limited");
-    return fail(429, "Too many reports from this device. Please try again in a few minutes.", {
-      "Retry-After": String(limit.retryAfterSec),
-    });
+    return failWith(overBudget);
   }
 
-  const form = await readFormData(req);
-  if (!form) return fail(400, ERROR_MESSAGES.expectedFormData);
+  const body = await readFormData(req);
+  if (!body.ok) return failWith(body);
+  const { form } = body;
 
-  const verification = verifyReporter(form, ip);
+  const verification = verifyReporter(form, clientIp(req));
   if (!verification.ok) return failWith(verification);
   const { phone } = verification;
   const verified = phone !== null;
@@ -75,10 +85,10 @@ export async function POST(req: Request) {
   if (!parsed.ok) return failWith(parsed);
   const { report } = parsed;
 
+  const origin = baseUrl(req);
   const triage = await classifyReport(report, verified);
   const db = store();
   const now = new Date().toISOString();
-  const origin = baseUrl(req);
   // This reporter's private link. The raw token is returned once, to the person
   // who submitted; only a salt is stored (see workflow.ts).
   const { token, reporter } = newReporter(report.email, now, phone);

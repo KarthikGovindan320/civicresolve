@@ -11,13 +11,12 @@ export default defineConfig({
     include: ["tests/**/*.test.{ts,tsx}"],
     setupFiles: ["tests/setup.ts"],
     env: { LOG_SILENT: "1" },
-    // Coverage is measured on the server code (domain logic, services, API routes). Browser-only
-    // helpers in src/lib/client are exercised through the UI instead. The thresholds sit just
-    // below the current numbers so coverage can only go up.
+    // Coverage is measured on everything we wrote: domain logic, services, API routes, the
+    // browser helpers and every component and page. The thresholds are floors, so coverage can
+    // only go up.
     coverage: {
       provider: "v8",
-      include: ["src/lib/**", "src/app/api/**"],
-      exclude: ["src/lib/client/**"],
+      include: ["src/lib/**", "src/app/**", "src/components/**"],
       reporter: ["text-summary", "text"],
       thresholds: { statements: 85, branches: 79, functions: 88, lines: 89 },
     },

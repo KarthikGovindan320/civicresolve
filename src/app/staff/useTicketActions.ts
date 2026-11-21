@@ -1,14 +1,20 @@
 "use client";
 
 import { useState } from "react";
-import { type KeyedRequestOptions, staffRequest } from "@/lib/client/api";
+import { useT } from "@/components/I18nProvider";
+import { type KeyedRequestOptions, failureMessages, settle, staffRequest } from "@/lib/client/api";
+import type { TicketActionInput } from "@/lib/schemas";
 import type { StaffTicket } from "./types";
 
 /** Called with the server's updated ticket and a short confirmation for the status line. */
 export type TicketUpdatedHandler = (ticket: StaffTicket, confirmation: string) => void;
 
-/** Sends a change to the ticket; `successMessage` is announced once the server accepts it. */
-export type UpdateTicket = (change: object, successMessage: string) => Promise<void>;
+/**
+ * Sends a workflow action to the ticket; `successMessage` is announced once the
+ * server accepts it. Resolves to whether it was accepted, so a form can keep
+ * its input when it was not.
+ */
+export type UpdateTicket = (change: TicketActionInput, successMessage: string) => Promise<boolean>;
 
 /**
  * The server actions available on one staff ticket. Every action shares one
@@ -16,22 +22,22 @@ export type UpdateTicket = (change: object, successMessage: string) => Promise<v
  * ticket back to the dashboard, so the UI always shows server-validated data.
  */
 export function useTicketActions(ticket: StaffTicket, staffKey: string, onUpdated: TicketUpdatedHandler) {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ticketPath = `/api/tickets/${ticket.id}`;
 
-  async function run(path: string, request: KeyedRequestOptions, successMessage: string) {
+  async function run(path: string, request: KeyedRequestOptions, successMessage: string): Promise<boolean> {
     setBusy(true);
     setError(null);
-    try {
-      const result = await staffRequest<StaffTicket>(path, staffKey, request);
-      if (!result.ok) setError(result.error ?? "Something went wrong.");
-      else onUpdated(result.data, `${ticket.id}: ${successMessage}`);
-    } catch {
-      setError("Network error. Please try again.");
-    } finally {
-      setBusy(false);
+    const outcome = await settle(staffRequest<StaffTicket>(path, staffKey, request), failureMessages(t));
+    setBusy(false);
+    if (!outcome.ok) {
+      setError(outcome.error);
+      return false;
     }
+    onUpdated(outcome.data, `${ticket.id}: ${successMessage}`);
+    return true;
   }
 
   /** Applies a workflow action (accept, transfer, review, note, admin override). */
@@ -48,12 +54,12 @@ export function useTicketActions(ticket: StaffTicket, staffKey: string, onUpdate
 
   /** Sends a message to the citizen. Returns an error message, or null on success. */
   async function sendMessage(text: string): Promise<string | null> {
-    const result = await staffRequest<StaffTicket>(`${ticketPath}/messages`, staffKey, {
-      method: "POST",
-      json: { text },
-    });
-    if (!result.ok) return result.error ?? "Couldn't send.";
-    onUpdated(result.data, `${ticket.id}: message sent`);
+    const outcome = await settle(
+      staffRequest<StaffTicket>(`${ticketPath}/messages`, staffKey, { method: "POST", json: { text } }),
+      failureMessages(t, "chat.error.send"),
+    );
+    if (!outcome.ok) return outcome.error;
+    onUpdated(outcome.data, `${ticket.id}: message sent`);
     return null;
   }
 

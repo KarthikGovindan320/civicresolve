@@ -38,7 +38,7 @@ Try signing in as one department and opening another department's ticket: the se
 | **Problem statement alignment** | Every required feature (reporting, Gemini classification, priority detection, department recommendation, tracking dashboard, admin dashboard) **plus** a full resolution loop: accept with a promised date, anonymous translated chat, fixes accepted only with a Gemini-checked after photo, citizen confirm/reopen, SLA deadlines with escalation. |
 | **Google services** | Gemini (multimodal triage, duplicate detection, translation, before/after verification) · Cloud Run · Firestore · Cloud Build · Artifact Registry · Secret Manager · Cloud Logging · Places API (New) integrated. |
 | **Security** | Server-enforced per-department access, HMAC private links (never stored), OTP anti-spam with numbers that stay private, review queue for unverified reports, rate limits, file-signature upload checks, CSP + security headers, secrets in Secret Manager. |
-| **Testing** | 227 automated Vitest tests (pure domain logic, component tests with Testing Library, mocked-Gemini answer validation, store concurrency, every staff action, the full API lifecycle, security edge cases, i18n) with enforced coverage thresholds, plus an end-to-end run on the live deployment with real Gemini calls. |
+| **Testing** | 368 automated Vitest tests (pure domain logic, component tests with Testing Library, mocked-Gemini answer validation, store concurrency, every staff action, the full API lifecycle, security edge cases, i18n, automated axe accessibility checks) with enforced coverage thresholds, plus an end-to-end run on the live deployment with real Gemini calls. |
 | **Accessibility** | Labelled controls, keyboard-operable map and address search (WAI-ARIA combobox), screen-reader announcements, voice reports in any language, text alongside every colour. |
 | **Efficiency** | One Gemini call per report, lightest model for short tasks, no cron jobs (deadlines computed on read), photos downscaled in the browser, small standalone container. |
 | **Code quality** | Layered architecture (thin routes → services → pure domain logic → store), TypeScript strict, one shared domain model, zod-validated inputs and AI output, and an enforced quality gate: complexity and function-size limits, zero lint warnings, Prettier, duplicate-code scan, coverage thresholds, CI on every push. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). |
@@ -49,7 +49,7 @@ Gemini does the judgement work, and deterministic rules wrap it so the outcome i
 | Context the app sees | Decision | Where |
 |---|---|---|
 | Report text, photo and/or voice note, in any language | One multimodal Gemini call returns category, priority + a written reason, responsible department, detected language, English summary and transcript (schema-constrained JSON, validated with zod) | `src/lib/gemini.ts` → `classifyIssue()`, prompts in `src/lib/ai/prompts.ts` |
-| Gemini unavailable or returns invalid output | Keyword classifier + the category the citizen chose; the report is never lost | `gemini.ts` → `fallbackClassify()` |
+| Gemini unavailable or returns invalid output | Keyword classifier + the category the citizen chose; the report is never lost | `src/lib/ai/fallback.ts` → `fallbackClassify()` |
 | Words like "live wire", "open manhole", "sewage overflow" (English, Tamil, Hindi) | Priority forced to **Critical**; nobody, including staff, can lower it | `src/lib/rules.ts` |
 | An open ticket of the same category within 200 m | The 5 nearest go to a light Gemini call: same physical problem? If yes, the report **joins** that ticket (reporter count +1) instead of creating a duplicate | `api/tickets/route.ts`, `gemini.ts` → `findDuplicate()` |
 | 3+ / 6+ citizens on one ticket (public impact) | Priority raised one / two levels (capped at High; Critical stays rule-only) | `rules.ts` → `effectivePriority()` |
@@ -142,7 +142,7 @@ Beyond the brief, to make it a real resolution process rather than a reporting f
 ### Code Quality
 - **Layers** (details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)): route handlers in `src/app/api/` only parse, authorise and respond; use cases live in `src/lib/services/` (`report.ts`, `ticket-actions.ts`); business rules are pure functions (`rules.ts`, `workflow.ts`); persistence sits behind a `Store` interface (Firestore or a local file); AI sits behind one client with prompts, model chains and fallbacks in `src/lib/ai/`.
 - **One domain model** (`src/lib/types.ts`) drives the Gemini schema, the zod validators, the API and the UI, including the shared input `LIMITS`, so values can't drift apart.
-- **Validated boundaries, no casts:** staff actions are parsed with a zod discriminated union (`src/lib/schemas.ts`) and dispatched by an exhaustive `switch` to one pure function per action; every Gemini answer (triage, duplicates, translation, proof of fix) is JSON-schema-constrained and then zod-validated; records read back from the database are parsed against the domain model (`src/lib/records.ts`) instead of being cast; errors use typed `Result` values and one `fail()` helper.
+- **Validated boundaries, no casts on the server:** staff actions are parsed with a zod discriminated union (`src/lib/schemas.ts`) and dispatched by an exhaustive `switch` to one pure function per action; every Gemini answer (triage, duplicates, translation, proof of fix) is JSON-schema-constrained and then zod-validated; records read back from the database are parsed against the domain model (`src/lib/records.ts`) instead of being cast; errors use typed `Result` values and one `fail()` helper. The browser trusts this app's own typed API responses at exactly one documented point (`src/lib/client/api.ts`).
 - **Data integrity:** every change to an existing ticket is an atomic read-modify-write (`Store.update`: a Firestore transaction in production, a single-writer queue locally), and a new ticket's id and record are written in one transaction, so simultaneous requests never overwrite each other or share an id.
 - **Small, focused units:** UI split into small components (staff actions, ticket page sections, report hooks); shared client helpers for API calls and formatting.
 - **Enforced quality gate** (`npm run check`, also run by GitHub Actions on every push):
@@ -153,7 +153,7 @@ Beyond the brief, to make it a real resolution process rather than a reporting f
 | Lint | ESLint | zero warnings; no non-null assertions; server code: complexity ≤ 12, nesting ≤ 3, functions ≤ 60 lines, ≤ 4 params; components: complexity ≤ 15 |
 | Formatting | Prettier | whole repo |
 | Duplication | jscpd | 0 clones (≥ 8 lines) |
-| Tests | Vitest + v8 coverage | 227 tests; coverage thresholds on server code (statements 85 %, branches 79 %, functions 88 %, lines 89 %) |
+| Tests | Vitest + v8 coverage | 368 tests; coverage thresholds on server and UI code (statements 85 %, branches 79 %, functions 88 %, lines 89 %), automated axe accessibility checks on the main screens |
 | Build | `next build` | production build in CI |
 
 ### Security
@@ -161,7 +161,7 @@ Beyond the brief, to make it a real resolution process rather than a reporting f
 - Anonymous citizens: private links are `HMAC-SHA256(server secret, salt)`. The link itself is never stored, so a database leak can't produce working links. Emails are never returned by any API; staff can message citizens without ever learning who they are.
 - Audience-specific views (`toPublic` / `toPrivate` in `src/lib/workflow.ts`): public pages never contain messages or reporter data, and server pages pass only sanitised data to client components.
 - **Accountability against spam:** reports require an OTP-verified mobile number (stateless HMAC-signed challenge, 5-minute expiry, rate-limited per IP and per number). The number is stored only on the private reporter record and never returned by any API, shown to staff or logged, so it can be used solely to trace misuse. Reports sent without verification are not lost, but are held in a separate bucket: rule-classified (no Gemini spend), limited to 3 per device per window, and invisible to the public and departments until the city admin approves them. (SMS sending is a stub until a gateway is connected. The on-screen demo code must be switched on explicitly in production with `OTP_DEMO_CODES=true`; without it, or a gateway, the server refuses to issue codes rather than hand them out.)
-- Per-IP rate limiting on report submission, which also protects the Gemini quota (`src/lib/security.ts`).
+- Per-IP rate limiting on every write and on the endpoints that call Gemini or Google Places, plus a five-minute lockout after 20 wrong staff passcodes; every 429 carries `Retry-After` (`src/lib/security.ts`, `src/lib/http.ts`). Oversized uploads are refused from `Content-Length` before the body is read.
 - Uploads checked by **file signature**, not the browser's claim: images (JPEG/PNG/WebP/GIF) and voice notes (WebM/Ogg/MP4/WAV/MP3/FLAC); size caps on both.
 - Strict input validation and enum whitelisting on every write (`api/tickets/route.ts`, `api/tickets/[id]/route.ts`).
 - Security headers: CSP, X-Frame-Options, nosniff, Permissions-Policy, HSTS (`next.config.ts`).
@@ -181,7 +181,7 @@ Beyond the brief, to make it a real resolution process rather than a reporting f
 - Leaflet code-split and loaded only on map pages; standalone Next.js build for small images and fast Cloud Run cold starts.
 
 ### Testing
-`npm test` runs **227 tests** (Vitest) in a few seconds with no network. Server tests run in Node; component tests (`*.test.tsx`) run in jsdom with Testing Library and `user-event`; `npm run test:coverage` enforces the coverage thresholds.
+`npm test` runs **368 tests** (Vitest) in a few seconds with no network. Server tests run in Node; component tests (`*.test.tsx`) run in jsdom with Testing Library and `user-event`; `npm run test:coverage` enforces the coverage thresholds.
 
 | File | What it proves |
 |---|---|
@@ -233,7 +233,7 @@ Beyond the brief, to make it a real resolution process rather than a reporting f
 cp .env.example .env.local   # add GEMINI_API_KEY
 npm install
 npm run dev                  # http://localhost:3000
-npm test                     # 227 tests
+npm test                     # 368 tests
 ```
 Staff portal: http://localhost:3000/staff. Dev passcodes: `admin123` (city admin), `roads123`, `sanitation123`, `electricity123`, `water123`, `drainage123`, `general123` (departments).
 Data is stored in `./data/tickets.json` (seeded from `seed/vellore_tickets.json`). Delete `./data` to reset.
@@ -252,17 +252,19 @@ src/
     api/               Thin HTTP handlers: parse, authorise, call a service, respond
   components/          Shared UI: map, address search, phone check, chat, settings menu, badges
   lib/
-    services/          Use cases: report submission, staff ticket actions
+    services/          Use cases: report submission, staff actions, proof of fix and citizen verdict, messages
     ai/                Gemini client (model chains, time budget), prompts, keyword fallback
     i18n/              English, Tamil and Hindi dictionaries (English is the typed source of truth)
-    client/            Browser helpers: API calls, formatting, image downscaling, sample reports
+    client/            Browser helpers: API calls, image downscaling, sample reports
     types.ts           Domain model shared by the API, the AI schema and the UI
     rules.ts           Safety rules and priority logic (pure)
-    workflow.ts        SLAs, privacy views, private links, signed photo URLs (pure)
+    workflow.ts        SLAs, privacy views, private links, signed photo URLs
     schemas.ts         zod validation of staff actions
     store.ts           Store interface: Firestore or local JSON file
-    auth.ts, security.ts, otp.ts, http.ts, uploads.ts, places.ts, notify.ts, log.ts
-tests/                 227 Vitest tests
+    records.ts         zod schemas for records read back from the database
+    photos.ts, format.ts, constants.ts, headers.ts   Shared by the browser and the server
+    auth.ts, security.ts, secrets.ts, otp.ts, http.ts, result.ts, uploads.ts, places.ts, notify.ts, log.ts
+tests/                 368 Vitest tests
 docs/ARCHITECTURE.md   Layers, request flows, trust boundaries, AI design
 ```
 

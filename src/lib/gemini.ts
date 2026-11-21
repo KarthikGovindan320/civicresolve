@@ -39,7 +39,7 @@ import {
   type DuplicateCandidate,
 } from "./ai/prompts";
 import { describeError, log } from "./log";
-import type { Category, Classification, Resolution } from "./types";
+import type { AiVerdict, Category, Classification } from "./types";
 
 export { geminiEnabled, type MediaPart } from "./ai/client";
 export { fallbackClassify } from "./ai/fallback";
@@ -191,7 +191,7 @@ export async function verifyResolution(input: {
   category: Category;
   before?: MediaPart | null;
   after: MediaPart;
-}): Promise<{ verdict: Resolution["aiVerdict"]; reason: string }> {
+}): Promise<{ verdict: AiVerdict; reason: string }> {
   if (!geminiEnabled()) return { verdict: "unclear", reason: "AI check unavailable; awaiting citizen confirmation." };
   try {
     const parts: Part[] = [{ text: verificationPrompt({ ...input, hasBeforePhoto: Boolean(input.before) }) }];

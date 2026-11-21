@@ -123,7 +123,8 @@ describe("AddressSearch", () => {
     await user.pointer({ keys: "[MouseLeft>]", target: option });
     await user.clear(input);
     await user.type(input, "Vellore");
-    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+    // One search per typed query, none for the choice itself (its coordinates came with it).
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     const sessions = fetchMock.mock.calls.map(([url]) => /session=([^&]+)/.exec(url)?.[1]);
     expect(sessions[0]).toBe("token-1");
     expect(sessions.at(-1)).toBe("token-2");

@@ -3,13 +3,8 @@
 import { useState } from "react";
 import { useT } from "@/components/I18nProvider";
 import type { VerifiedPhone } from "@/components/PhoneVerify";
-import { apiRequest } from "@/lib/client/api";
-import type { PublicTicket } from "@/lib/types";
-
-export interface Coordinates {
-  lat: number;
-  lng: number;
-}
+import { apiRequest, failureMessages, settle } from "@/lib/client/api";
+import type { Coordinates, PublicTicket } from "@/lib/types";
 
 /** Everything the citizen has entered on the report form. */
 export interface ReportDraft {
@@ -53,6 +48,9 @@ function toFormData(draft: ReportDraft, location: Coordinates, verifiedPhone: Ve
   return form;
 }
 
+/** The part of the form a validation error is about, so the form can mark those fields as invalid. */
+export type ReportErrorField = "location" | "content";
+
 /**
  * Drives the two-step submission of a report: validate the draft and open the
  * phone-verification dialog, then send the report with the verified phone.
@@ -60,7 +58,8 @@ function toFormData(draft: ReportDraft, location: Coordinates, verifiedPhone: Ve
 export function useReportSubmission(draft: ReportDraft) {
   const t = useT();
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; field?: ReportErrorField } | null>(null);
+  const showError = (message: string | null) => setError(message === null ? null : { message });
   const [result, setResult] = useState<ReportResult | null>(null);
   const [verifying, setVerifying] = useState(false);
 
@@ -72,9 +71,9 @@ export function useReportSubmission(draft: ReportDraft) {
   function startVerification(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
-    if (!draft.location) return setError(t("report.error.needLocation"));
+    if (!draft.location) return setError({ message: t("report.error.needLocation"), field: "location" });
     if (!draft.title.trim() && !draft.description.trim() && !draft.audio)
-      return setError(t("report.error.needContent"));
+      return setError({ message: t("report.error.needContent"), field: "content" });
     setVerifying(true);
   }
 
@@ -88,26 +87,26 @@ export function useReportSubmission(draft: ReportDraft) {
     // `submitting` disables and relabels the buttons while Gemini works, which
     // prevents double submissions and tells the citizen what is happening.
     setSubmitting(true);
-    try {
-      const response = await apiRequest<ReportResult>("/api/tickets", {
+    const outcome = await settle(
+      apiRequest<ReportResult>("/api/tickets", {
         method: "POST",
         form: toFormData(draft, draft.location, verifiedPhone),
-      });
-      if (!response.ok) return response.error || t("common.error.generic");
-      setResult(response.data);
-      return null;
-    } catch {
-      return t("common.error.network");
-    } finally {
-      setSubmitting(false);
-    }
+      }),
+      failureMessages(t),
+    );
+    setSubmitting(false);
+    if (!outcome.ok) return outcome.error;
+    setResult(outcome.data);
+    return null;
   }
 
   return {
     submitting,
-    error,
+    error: error?.message ?? null,
+    /** The fields the current error is about, if it is about particular fields. */
+    errorField: error?.field,
     /** Shows a problem outside submission itself (location, photo) in the form's alert. */
-    showError: setError,
+    showError,
     result,
     verifying,
     startVerification,

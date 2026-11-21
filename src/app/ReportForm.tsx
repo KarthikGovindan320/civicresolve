@@ -1,23 +1,25 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import AddressSearch from "@/components/AddressSearch";
+import { useState } from "react";
 import { useT } from "@/components/I18nProvider";
 import LabelledField from "@/components/LabelledField";
-import Map from "@/components/Map";
 import Photo from "@/components/Photo";
 import PhoneVerify from "@/components/PhoneVerify";
 import VoiceRecorder from "@/components/VoiceRecorder";
+import LocationPicker from "@/components/report/LocationPicker";
 import ResultCard from "@/components/report/ResultCard";
-import { type Coordinates, useReportSubmission } from "@/components/report/useReportSubmission";
+import { usePhotoPreview } from "@/components/report/usePhotoPreview";
+import { useReportSubmission } from "@/components/report/useReportSubmission";
 import { fieldClass, fieldLabelClass } from "@/components/ui";
 import { downscale } from "@/lib/client/image";
 import { sampleAt } from "@/lib/client/samples";
-import { CATEGORIES, LIMITS } from "@/lib/types";
+import { CATEGORIES, LIMITS, type Coordinates } from "@/lib/types";
 
 const EMPTY_FIELDS = { title: "", description: "", category: "auto", address: "", email: "" };
 type FieldName = keyof typeof EMPTY_FIELDS;
 type FieldElement = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+
+const ERROR_ID = "report-error";
 
 /**
  * The citizen report form: title, description, location, category and an
@@ -40,27 +42,15 @@ export default function ReportForm({ searchProvider = "osm" }: { searchProvider?
   const t = useT();
   const [fields, setFields] = useState(EMPTY_FIELDS);
   const [location, setLocation] = useState<Coordinates | null>(null);
-  const [photo, setPhoto] = useState<{ blob: Blob | null; previewUrl: string | null }>({
-    blob: null,
-    previewUrl: null,
-  });
-  // Object URLs hold the image in memory until revoked; release the last one when the form goes away.
-  const previewUrlRef = useRef<string | null>(null);
-  useEffect(() => {
-    previewUrlRef.current = photo.previewUrl;
-  }, [photo.previewUrl]);
-  useEffect(
-    () => () => {
-      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
-    },
-    [],
-  );
+  const photo = usePhotoPreview();
   const [audio, setAudio] = useState<Blob | null>(null);
-  const [locating, setLocating] = useState(false);
   // How many samples have been filled in, and the announcement for the latest one.
   const [samplesShown, setSamplesShown] = useState(0);
   const [sampleNotice, setSampleNotice] = useState("");
   const submission = useReportSubmission({ ...fields, location, image: photo.blob, audio });
+  // A missing title and description is an error on both fields, tied to the message that explains it.
+  const contentErrorProps =
+    submission.errorField === "content" ? { "aria-invalid": true, "aria-describedby": ERROR_ID } : {};
 
   const updateField = (name: FieldName) => (event: React.ChangeEvent<FieldElement>) =>
     setFields((current) => ({ ...current, [name]: event.target.value }));
@@ -87,43 +77,21 @@ export default function ReportForm({ searchProvider = "osm" }: { searchProvider?
     submission.showError(null);
   }
 
-  function locateMe() {
-    if (!navigator.geolocation) return submission.showError(t("report.error.noGeolocation"));
-    setLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setLocation({ lat: position.coords.latitude, lng: position.coords.longitude });
-        setLocating(false);
-      },
-      () => {
-        submission.showError(t("report.error.locationFailed"));
-        setLocating(false);
-      },
-      { enableHighAccuracy: true, timeout: 10000 },
-    );
-  }
-
   async function choosePhoto(file: File | undefined) {
-    if (!file) return replacePhoto(null);
+    if (!file) return photo.replacePhoto(null);
     try {
-      replacePhoto(await downscale(file));
+      photo.replacePhoto(await downscale(file));
     } catch {
       // The previous photo and its preview stay as they were.
       submission.showError(t("report.error.imageUnreadable"));
     }
   }
 
-  /** Swaps in the new photo (or clears it) and only then releases the old preview. */
-  function replacePhoto(blob: Blob | null) {
-    if (photo.previewUrl) URL.revokeObjectURL(photo.previewUrl);
-    setPhoto({ blob, previewUrl: blob ? URL.createObjectURL(blob) : null });
-  }
-
   if (submission.result)
     return <ResultCard result={submission.result} onReportAnother={() => window.location.reload()} />;
 
-  // Every input has a real label, errors use role="alert", and the layout
-  // collapses to a single column on phones.
+  // Every input has a real label, errors use role="alert" and are tied to the
+  // fields they are about, and the layout collapses to a single column on phones.
   return (
     <>
       {submission.verifying && (
@@ -160,6 +128,7 @@ export default function ReportForm({ searchProvider = "osm" }: { searchProvider?
               onChange={updateField("title")}
               placeholder={t("report.titlePlaceholder")}
               maxLength={LIMITS.title}
+              {...contentErrorProps}
             />
           </LabelledField>
           <LabelledField id="description" label={t("report.description")}>
@@ -170,6 +139,7 @@ export default function ReportForm({ searchProvider = "osm" }: { searchProvider?
               onChange={updateField("description")}
               maxLength={LIMITS.description}
               placeholder={t("report.descriptionPlaceholder")}
+              {...contentErrorProps}
             />
           </LabelledField>
           <div>
@@ -202,48 +172,19 @@ export default function ReportForm({ searchProvider = "osm" }: { searchProvider?
         </div>
 
         <div className="space-y-4">
-          <div>
-            <div className="mb-1 flex flex-wrap items-center justify-between gap-x-3">
-              <span className="text-sm font-medium" id="map-label">
-                {t("report.location")}
-              </span>
-              <button
-                type="button"
-                onClick={locateMe}
-                disabled={locating}
-                className="text-sm font-medium text-blue-700 underline disabled:opacity-50"
-              >
-                {locating ? t("report.locating") : t("report.useMyLocation")}
-              </button>
-            </div>
-            {/* Typing an address shows place suggestions; choosing one moves the map there and pins it. */}
-            <div className="mb-2">
-              <AddressSearch
-                provider={searchProvider}
-                onSelect={(place) => {
-                  setLocation({ lat: place.lat, lng: place.lng });
-                  // Fill the landmark field only if the citizen hasn't typed one.
-                  setFields((current) =>
-                    current.address.trim() ? current : { ...current, address: place.address.slice(0, LIMITS.address) },
-                  );
-                }}
-              />
-            </div>
-            {/* The map is a labelled region with keyboard instructions, and the
-              chosen location is announced politely to screen readers. */}
-            <div role="region" aria-labelledby="map-label" aria-describedby="map-help">
-              <Map picked={location} onPick={setLocation} height={320} />
-            </div>
-            <p id="map-help" className="mt-1 text-xs text-slate-600">
-              <span className="sm:hidden">{t("report.mapHelpTouch")}</span>
-              <span className="max-sm:sr-only">{t("report.mapHelpKeyboard")}</span>
-            </p>
-            <p className="text-xs text-slate-600" aria-live="polite">
-              {location
-                ? t("report.pinnedAt", { lat: location.lat.toFixed(5), lng: location.lng.toFixed(5) })
-                : t("report.noLocation")}
-            </p>
-          </div>
+          <LocationPicker
+            location={location}
+            onLocationChange={setLocation}
+            // Fill the landmark field only if the citizen hasn't typed one.
+            onPlaceChosen={(place) =>
+              setFields((current) =>
+                current.address.trim() ? current : { ...current, address: place.address.slice(0, LIMITS.address) },
+              )
+            }
+            onError={submission.showError}
+            searchProvider={searchProvider}
+            errorId={submission.errorField === "location" ? ERROR_ID : undefined}
+          />
           <LabelledField id="address" label={t("report.landmark")}>
             <input
               id="address"
@@ -273,14 +214,14 @@ export default function ReportForm({ searchProvider = "osm" }: { searchProvider?
             </p>
           </LabelledField>
           {submission.error && (
-            <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">
+            <p id={ERROR_ID} role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">
               {submission.error}
             </p>
           )}
           <button
             type="submit"
             disabled={submission.submitting}
-            className="w-full rounded-md bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+            className="w-full rounded-md bg-emerald-700 px-4 py-3 font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
           >
             {submission.submitting ? t("report.analysing") : t("report.submit")}
           </button>

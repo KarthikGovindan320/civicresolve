@@ -4,23 +4,24 @@ import { compactButtonClass, compactFieldClass } from "@/components/ui";
 import { LIMITS } from "@/lib/types";
 import type { UpdateTicket } from "../useTicketActions";
 
-/** Adds a staff note to the ticket's public timeline. */
+/** Adds a staff note to the ticket's public timeline. The draft is cleared only once the server has saved it. */
 export default function NoteForm({
   ticketId,
   note,
   onNoteChange,
+  busy,
   onUpdate,
 }: {
   ticketId: string;
   note: string;
   onNoteChange: (note: string) => void;
+  busy: boolean;
   onUpdate: UpdateTicket;
 }) {
-  function addNote(event: React.FormEvent) {
+  async function addNote(event: React.FormEvent) {
     event.preventDefault();
     if (!note.trim()) return;
-    onUpdate({ action: "note", note }, "note added");
-    onNoteChange("");
+    if (await onUpdate({ action: "note", note }, "note added")) onNoteChange("");
   }
 
   return (
@@ -36,7 +37,9 @@ export default function NoteForm({
         className={`${compactFieldClass} min-w-40 flex-1`}
         maxLength={LIMITS.staffNote}
       />
-      <button className={`${compactButtonClass} bg-slate-900 text-white`}>Add note</button>
+      <button disabled={busy} className={`${compactButtonClass} bg-slate-900 text-white`}>
+        Add note
+      </button>
     </form>
   );
 }

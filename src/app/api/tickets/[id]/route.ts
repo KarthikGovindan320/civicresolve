@@ -19,36 +19,41 @@
 // =============================================================================
 
 import { NextResponse } from "next/server";
-import { canActOn, isAdminRole, staffRole } from "@/lib/auth";
+import { authenticateStaff, canActOn, isAdminRole } from "@/lib/auth";
+import { CITIZEN_KEY_HEADER } from "@/lib/headers";
 import {
-  CITIZEN_KEY_HEADER,
   ERROR_MESSAGES,
   NO_STORE_HEADERS,
   baseUrl,
   fail,
   failWith,
+  findTicket,
   loadTicketForStaff,
   readJsonBody,
   updateTicketAtomically,
 } from "@/lib/http";
 import { log } from "@/lib/log";
 import { notifyReporters } from "@/lib/notify";
-import { parseTicketAction } from "@/lib/schemas";
 import { failure } from "@/lib/result";
+import { TicketActionSchema } from "@/lib/schemas";
 import { applyTicketAction } from "@/lib/services/ticket-actions";
 import { store } from "@/lib/store";
 import { isHeld } from "@/lib/types";
 import { isReporter, toPrivate, toPublic } from "@/lib/workflow";
 
+/** Staff actions are cheap but each may email every reporter: a budget no real shift comes near. */
+const STAFF_ACTION_BUDGET = { bucket: "staff-action", max: 120 };
+
 /** Read one ticket: the private view for its own reporters and responsible staff, the public view otherwise. */
 export async function GET(req: Request, ctx: RouteContext<"/api/tickets/[id]">) {
+  const staff = authenticateStaff(req);
+  if (!staff.ok) return failWith(staff);
+  const { role } = staff;
   const { id } = await ctx.params;
-  // Case-insensitive lookup: "cr-1004" typed on a phone still finds CR-1004.
-  const ticket = await store().get(id.toUpperCase());
+  const ticket = await findTicket(store(), id);
   if (!ticket) return fail(404, ERROR_MESSAGES.ticketNotFound);
   const token = req.headers.get(CITIZEN_KEY_HEADER) ?? new URL(req.url).searchParams.get("k");
   const isOwnReporter = isReporter(ticket, token);
-  const role = staffRole(req);
   // Held (unverified / rejected) reports exist only for their reporter and the admin.
   if (isHeld(ticket) && !isOwnReporter && !isAdminRole(role)) return fail(404, ERROR_MESSAGES.ticketNotFound);
   const seesPrivateView = isOwnReporter || canActOn(role, ticket);
@@ -58,12 +63,13 @@ export async function GET(req: Request, ctx: RouteContext<"/api/tickets/[id]">) 
 /** Apply one staff action to a ticket, save it, and tell the reporters if it concerns them. */
 export async function PATCH(req: Request, ctx: RouteContext<"/api/tickets/[id]">) {
   const { id } = await ctx.params;
-  const access = await loadTicketForStaff(req, id);
+  const access = await loadTicketForStaff(req, id, STAFF_ACTION_BUDGET);
   if (!access.ok) return failWith(access);
   const { ticket, role, db } = access;
 
-  const action = parseTicketAction(await readJsonBody(req));
+  const action = await readJsonBody(req, TicketActionSchema);
   if (!action) return fail(400, "Unknown action.");
+  const origin = baseUrl(req);
 
   // The action is applied to the latest stored version inside an atomic update, and
   // permission is re-checked there in case the ticket was transferred meanwhile.
@@ -77,6 +83,6 @@ export async function PATCH(req: Request, ctx: RouteContext<"/api/tickets/[id]">
   const { ticket: updated, notice, audit } = result;
 
   if (audit) log.info(audit.event, audit.fields);
-  if (notice) await notifyReporters(updated, notice.subject, notice.text, baseUrl(req));
+  if (notice) await notifyReporters(updated, notice.subject, notice.text, origin);
   return NextResponse.json(toPrivate(updated));
 }

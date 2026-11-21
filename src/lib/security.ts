@@ -1,10 +1,12 @@
 // =============================================================================
 // Request-level protections used by the API routes
 // -----------------------------------------------------------------------------
-//   • rateLimit()      → stops one client from flooding the report endpoint
+//   • rateLimit()      → stops one client from flooding an endpoint
 //                        (protects the database and the Gemini quota/cost).
+//   • peekRateLimit()  → reads a budget without counting a request (used to lock
+//                        out a client that keeps guessing staff passcodes).
 //   • safeEqual()      → constant-time secret comparison (no timing attacks
-//                        on the admin passcode).
+//                        on the staff passcodes).
 //   • sniffImageType() → checks an upload's real file signature ("magic bytes"),
 //                        so a script renamed to .jpg is rejected even if the
 //                        browser claims image/jpeg.
@@ -14,11 +16,12 @@
 // =============================================================================
 
 import { timingSafeEqual } from "crypto";
+import { MINUTE_MS } from "./constants";
 
 // Fixed-window rate limiter held in memory. It is per instance, which is enough
 // for a prototype on Cloud Run (each instance protects itself); a shared store
 // such as Memorystore would make it global.
-const WINDOW_MS = Number(process.env.RATE_WINDOW_MS || 10 * 60_000);
+const WINDOW_MS = Number(process.env.RATE_WINDOW_MS || 10 * MINUTE_MS);
 const MAX_HITS = Number(process.env.RATE_MAX || 10);
 /** Above this many tracked keys, expired windows are swept so the map cannot grow without bound. */
 const MAX_TRACKED_KEYS = 10_000;
@@ -27,22 +30,58 @@ const SIGNATURE_BASE64_CHARS = 24;
 
 const hitsByKey = new Map<string, { count: number; resetAt: number }>();
 
+/** Whether a request may go ahead and, when it may not, how many seconds until the window resets. */
+export interface RateLimitResult {
+  ok: boolean;
+  retryAfterSec: number;
+}
+
+/** How many requests a budget allows per window (default RATE_MAX, 10), how long a window lasts, and the clock to judge by. */
+export interface RateLimitOptions {
+  max?: number;
+  windowMs?: number;
+  now?: number;
+}
+
+const ALLOWED: RateLimitResult = { ok: true, retryAfterSec: 0 };
+
 function sweepExpiredWindows(now: number) {
   for (const [key, entry] of hitsByKey) if (entry.resetAt <= now) hitsByKey.delete(key);
 }
 
-/** Count one request against `key`; `ok` turns false once `max` is exceeded within the current window. */
-export function rateLimit(key: string, now = Date.now(), max = MAX_HITS): { ok: boolean; retryAfterSec: number } {
+/** The live window for `key`, or undefined when there is none or it has expired. */
+function currentWindow(key: string, now: number) {
   const entry = hitsByKey.get(key);
-  if (!entry || entry.resetAt <= now) {
-    hitsByKey.set(key, { count: 1, resetAt: now + WINDOW_MS });
+  return entry && entry.resetAt > now ? entry : undefined;
+}
+
+const blocked = (resetAt: number, now: number): RateLimitResult => ({
+  ok: false,
+  retryAfterSec: Math.ceil((resetAt - now) / 1000),
+});
+
+/** Count one request against `key`; `ok` turns false once more than `max` have been counted in the current window. */
+export function rateLimit(
+  key: string,
+  { max = MAX_HITS, windowMs = WINDOW_MS, now = Date.now() }: RateLimitOptions = {},
+): RateLimitResult {
+  const entry = currentWindow(key, now);
+  if (!entry) {
+    hitsByKey.set(key, { count: 1, resetAt: now + windowMs });
     if (hitsByKey.size > MAX_TRACKED_KEYS) sweepExpiredWindows(now);
-    return { ok: true, retryAfterSec: 0 };
+    return ALLOWED;
   }
   entry.count += 1;
-  return entry.count > max
-    ? { ok: false, retryAfterSec: Math.ceil((entry.resetAt - now) / 1000) }
-    : { ok: true, retryAfterSec: 0 };
+  return entry.count > max ? blocked(entry.resetAt, now) : ALLOWED;
+}
+
+/** Check `key`'s budget without counting a request: `ok` is false once `max` requests have been counted in this window. */
+export function peekRateLimit(
+  key: string,
+  { max = MAX_HITS, now = Date.now() }: RateLimitOptions = {},
+): RateLimitResult {
+  const entry = currentWindow(key, now);
+  return entry && entry.count >= max ? blocked(entry.resetAt, now) : ALLOWED;
 }
 
 /** The caller's IP address as reported by Cloud Run's front end, or "local" when there is no proxy. */

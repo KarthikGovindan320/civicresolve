@@ -97,6 +97,9 @@ export const en = {
   "map.loading": "Loading map",
   "map.issueLocation": "Issue location",
   "map.view": "View {id}",
+  "map.pickerLabel": "Map for choosing the issue location",
+  "map.cityLabel": "Map of the issues shown. The list below has the same issues.",
+  "map.ticketLabel": "Map of where this issue is",
   "search.label": "Search an address or landmark",
   "search.placeholder": "Street or landmark, e.g. Katpadi bus stand",
   "search.button": "Search",
@@ -125,7 +128,7 @@ export const en = {
     "This keeps fake reports out. Your number is private: departments and the public never see it. It is kept only so misuse can be traced.",
   "verify.phone": "Mobile number",
   "verify.remember": "Remember this number on this device",
-  "verify.codeLabel": "6-digit code sent to {phone}",
+  "verify.codeLabel": "{digits}-digit code sent to {phone}",
   "verify.demoBefore": "Demo: SMS isn't connected yet, so use this code:",
   "verify.demoAfter": "Once SMS is enabled, the code will arrive by text message instead.",
   "verify.newCode": "Send a new code",
@@ -137,7 +140,7 @@ export const en = {
   "verify.unverifiedNote":
     "It will be saved, but a city officer reviews it first, so it may take longer to reach the department.",
   "verify.error.sendFailed": "Couldn't send the code.",
-  "verify.error.codeFormat": "Enter the 6-digit code.",
+  "verify.error.codeFormat": "Enter the {digits}-digit code.",
 
   // Result card after submitting
   "result.submitted": "Report submitted",
@@ -217,6 +220,7 @@ export const en = {
   "panel.reopen": "Reopen issue",
   "panel.cancel": "Cancel",
   "panel.confirmed": "You confirmed this is fixed. Thank you!",
+  "panel.reopened": "Your issue has been reopened and the department has been told.",
   "panel.messagesWith": "Messages with {department}",
   "chat.sender.citizen": "Citizen",
   "chat.sender.department": "Department",

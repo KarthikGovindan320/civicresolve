@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@/components/I18nProvider";
 import SettingsMenu from "@/components/SettingsMenu";
 import { createTranslator } from "@/lib/i18n";
+import { expectNoAxeViolations } from "./setup";
 
 const refresh = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh }) }));
@@ -57,5 +58,11 @@ describe("SettingsMenu", () => {
     expect(contrast).toHaveAttribute("aria-pressed", "true");
     await user.click(contrast);
     expect(contrast).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("has no axe violations while open", async () => {
+    const { user, trigger } = setup();
+    await user.click(trigger);
+    await expectNoAxeViolations(document.body);
   });
 });

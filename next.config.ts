@@ -10,7 +10,10 @@ import type { NextConfig } from "next";
 //     image as HTML or script.
 //   • Permissions-Policy: microphone (voice notes), camera (photos) and
 //     geolocation ("use my location") are allowed for our own origin only.
-//   • Strict-Transport-Security: HTTPS only (Cloud Run serves HTTPS by default).
+//   • Strict-Transport-Security: HTTPS only (Cloud Run serves HTTPS by default),
+//     eligible for the browsers' HSTS preload list.
+//   • Cross-Origin-Opener-Policy same-origin: a page opened from another site
+//     gets no handle on our window (no cross-window attacks or leaks).
 // 'unsafe-inline' for scripts is needed by Next.js's inline bootstrap script;
 // 'unsafe-eval' is added in development only (React dev tooling).
 const isDev = process.env.NODE_ENV !== "production";
@@ -34,7 +37,8 @@ const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "Permissions-Policy", value: "microphone=(self), camera=(self), geolocation=(self)" },
-  { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },
+  { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains; preload" },
+  { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
 ];
 
 const nextConfig: NextConfig = {

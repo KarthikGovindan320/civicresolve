@@ -21,7 +21,7 @@ const isCurrent = (pathname: string, href: string) => (href === "/" ? pathname =
  * the wordmark is hidden (the logo still links home) and, if larger text makes
  * the row too wide, the links wrap onto a second line instead of overflowing.
  */
-export function SiteHeader({ initialDisplay }: { initialDisplay: DisplayPreferences }) {
+export default function SiteHeader({ initialDisplay }: { initialDisplay: DisplayPreferences }) {
   const t = useT();
   const pathname = usePathname();
   return (
@@ -39,7 +39,7 @@ export function SiteHeader({ initialDisplay }: { initialDisplay: DisplayPreferen
           className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-2 gap-y-1 px-4 py-2"
         >
           <Link href="/" lang="en" className="flex min-h-11 items-center gap-2 font-semibold text-slate-900">
-            <span aria-hidden className="grid h-7 w-7 place-items-center rounded-md bg-emerald-600 text-sm text-white">
+            <span aria-hidden className="grid h-7 w-7 place-items-center rounded-md bg-emerald-700 text-sm text-white">
               CR
             </span>
             <span className="max-sm:sr-only">CivicResolve</span>
@@ -60,15 +60,5 @@ export function SiteHeader({ initialDisplay }: { initialDisplay: DisplayPreferen
         </nav>
       </header>
     </>
-  );
-}
-
-/** Page footer; the product name stays in English in every language. */
-export function SiteFooter() {
-  const t = useT();
-  return (
-    <footer className="border-t border-slate-200 py-4 text-center text-xs text-slate-600">
-      <span lang="en">CivicResolve</span> · {t("footer.poweredBy")}
-    </footer>
   );
 }

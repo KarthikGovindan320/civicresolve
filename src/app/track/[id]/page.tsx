@@ -1,6 +1,8 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import Map from "@/components/Map";
+import { cache } from "react";
+import LazyMap from "@/components/LazyMap";
 import Photo from "@/components/Photo";
 import { getTranslator } from "@/lib/i18n/server";
 import { store } from "@/lib/store";
@@ -16,6 +18,32 @@ import TicketNotices from "./TicketNotices";
 import Timeline from "./Timeline";
 
 export const dynamic = "force-dynamic"; // always show the latest status, never a cached copy
+
+/**
+ * The ticket this visitor may see, or null. A report held for review (sent
+ * without phone verification) is visible only to its own reporter, so
+ * unscreened content never appears on public pages, nor in a page title.
+ * Cached per request, so the title and the page share one read.
+ */
+const loadVisibleTicket = cache(async (id: string, token: string | null) => {
+  const storedTicket = await store().get(id.toUpperCase());
+  if (!storedTicket) return null;
+  const isOwner = isReporter(storedTicket, token);
+  if (isHeld(storedTicket) && !isOwner) return null;
+  return { storedTicket, isOwner };
+});
+
+/** The private-link token from the `k` query parameter, if there is exactly one. */
+const tokenFrom = (privateKey: string | string[] | undefined) => (typeof privateKey === "string" ? privateKey : null);
+
+/** Titles the page with the ticket id and title (WCAG 2.4.2), or as not found, by the same visibility rule. */
+export async function generateMetadata({ params, searchParams }: PageProps<"/track/[id]">): Promise<Metadata> {
+  const { id } = await params;
+  const { k: privateKey } = await searchParams;
+  const visible = await loadVisibleTicket(id, tokenFrom(privateKey));
+  if (!visible) return { title: (await getTranslator())("notFound.ticketTitle") };
+  return { title: `${visible.storedTicket.id}: ${visible.storedTicket.title}` };
+}
 
 /**
  * Single ticket tracking page, from submission to resolution: a three-step
@@ -39,13 +67,10 @@ export default async function TicketPage({ params, searchParams }: PageProps<"/t
   const t = await getTranslator();
   const { id } = await params;
   const { k: privateKey } = await searchParams;
-  const storedTicket = await store().get(id.toUpperCase());
-  if (!storedTicket) notFound();
-  const token = typeof privateKey === "string" ? privateKey : null;
-  const isOwner = isReporter(storedTicket, token);
-  // A report held for review (sent without phone verification) is visible only to
-  // its own reporter, so unscreened content never appears on public pages.
-  if (isHeld(storedTicket) && !isOwner) notFound();
+  const token = tokenFrom(privateKey);
+  const visible = await loadVisibleTicket(id, token);
+  if (!visible) notFound();
+  const { storedTicket, isOwner } = visible;
   // Only the sanitised view is rendered and passed to client components; the
   // stored ticket (with reporter secrets) stays on the server.
   const ticket = toPublic(storedTicket);
@@ -86,7 +111,7 @@ export default async function TicketPage({ params, searchParams }: PageProps<"/t
           )}
         </section>
         <section className="space-y-4">
-          <Map tickets={[ticket]} center={ticket.location} zoom={16} height={260} />
+          <LazyMap label={t("map.ticketLabel")} tickets={[ticket]} center={ticket.location} zoom={16} height={260} />
           <Timeline history={ticket.history} t={t} />
         </section>
       </div>

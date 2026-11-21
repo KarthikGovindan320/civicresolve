@@ -1,34 +1,42 @@
 "use client";
 
-import { useState } from "react";
-import { formatDateTime } from "@/lib/client/format";
+import { useId, useState } from "react";
+import { formatDateTime } from "@/lib/format";
 import { languageLabel } from "@/lib/i18n";
 import { LIMITS, type Message } from "@/lib/types";
 import { useT } from "./I18nProvider";
+
+/** The language staff write and read in; citizen messages are translated into it. */
+const STAFF_LANGUAGE = "en";
 
 /**
  * Conversation between a department and the citizen, used on both sides (the
  * citizen's private page and the staff dashboard). Each message shows the
  * original text and Gemini's translation, so both parties read it in their
- * own language. The list is an ARIA log, so screen readers announce new
+ * own language. The list sits in an ARIA log, so screen readers announce new
  * messages politely.
  */
 export default function MessageThread({
   messages,
   viewer,
+  citizenLanguage,
   onSend,
 }: {
   messages: Message[];
   viewer: "citizen" | "staff";
+  /** The citizen's language (the ticket's original language): staff messages are translated into it. */
+  citizenLanguage: string;
   /** Sends the message; resolves to an error message, or null on success. */
   onSend: (text: string) => Promise<string | null>;
 }) {
   const t = useT();
+  const inputId = useId();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isOwnMessage = (message: Message) =>
     viewer === "citizen" ? message.from === "citizen" : message.from === "department" || message.from === "admin";
+  const translationLanguage = (message: Message) => (message.from === "citizen" ? STAFF_LANGUAGE : citizenLanguage);
 
   async function send(event: React.FormEvent) {
     event.preventDefault();
@@ -48,36 +56,41 @@ export default function MessageThread({
 
   return (
     <div>
-      <ol role="log" aria-label={t("chat.label")} aria-live="polite" className="max-h-80 space-y-2 overflow-y-auto">
-        {messages.map((message) => (
-          <li key={message.id} className={`rounded-lg px-3 py-2 text-sm ${bubbleClass(message)}`}>
-            <div className="mb-0.5 flex flex-wrap gap-x-2 text-xs text-slate-600">
-              <span className="font-medium">{t(`chat.sender.${message.from}`)}</span>
-              <time dateTime={message.at}>{formatDateTime(message.at)}</time>
-            </div>
-            <p lang={message.lang}>{message.text}</p>
-            {message.translation && (
-              <p className="mt-1 border-t border-slate-200 pt-1 text-slate-700">
-                <span className="text-xs text-slate-500">
-                  {t("chat.translated", { language: languageLabel(t, message.lang) })}{" "}
-                </span>
-                {message.translation}
-              </p>
-            )}
-          </li>
-        ))}
-        {!messages.length && <li className="text-sm text-slate-600">{t("chat.empty")}</li>}
-      </ol>
+      {/* Focusable so keyboard users can scroll a long conversation. */}
+      <div role="log" aria-label={t("chat.label")} tabIndex={0} className="max-h-80 overflow-y-auto">
+        <ol className="space-y-2">
+          {messages.map((message) => (
+            <li key={message.id} className={`rounded-lg px-3 py-2 text-sm ${bubbleClass(message)}`}>
+              <div className="mb-0.5 flex flex-wrap gap-x-2 text-xs text-slate-600">
+                <span className="font-medium">{t(`chat.sender.${message.from}`)}</span>
+                <time dateTime={message.at}>{formatDateTime(message.at)}</time>
+              </div>
+              <p lang={message.lang}>{message.text}</p>
+              {message.translation && (
+                <p className="mt-1 border-t border-slate-200 pt-1 text-slate-700">
+                  <span className="text-xs text-slate-600">
+                    {t("chat.translated", { language: languageLabel(t, message.lang) })}{" "}
+                  </span>
+                  <span lang={translationLanguage(message)}>{message.translation}</span>
+                </p>
+              )}
+            </li>
+          ))}
+          {!messages.length && <li className="text-sm text-slate-600">{t("chat.empty")}</li>}
+        </ol>
+      </div>
       <form onSubmit={send} className="mt-3 flex gap-2">
-        <label htmlFor={`msg-${viewer}`} className="sr-only">
+        <label htmlFor={inputId} className="sr-only">
           {t("chat.write")}
         </label>
         <input
-          id={`msg-${viewer}`}
+          id={inputId}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           maxLength={LIMITS.message}
           placeholder={viewer === "citizen" ? t("chat.placeholder") : "Message the citizen (auto-translated)…"}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? `${inputId}-error` : undefined}
           className="min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
         />
         <button
@@ -88,7 +101,7 @@ export default function MessageThread({
         </button>
       </form>
       {error && (
-        <p role="alert" className="mt-1 text-sm text-red-700">
+        <p id={`${inputId}-error`} role="alert" className="mt-1 text-sm text-red-700">
           {error}
         </p>
       )}

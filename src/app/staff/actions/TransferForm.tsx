@@ -15,11 +15,13 @@ export default function TransferForm({
   busy: boolean;
   onUpdate: UpdateTicket;
 }) {
-  const [targetDepartment, setTargetDepartment] = useState("");
+  const [targetDepartment, setTargetDepartment] = useState<Department | null>(null);
   const [reason, setReason] = useState("");
+  const otherDepartments = DEPARTMENTS.filter((department) => department !== currentDepartment);
 
   function transfer(event: React.FormEvent) {
     event.preventDefault();
+    if (!targetDepartment) return;
     onUpdate({ action: "transfer", department: targetDepartment, note: reason }, `transferred to ${targetDepartment}`);
   }
 
@@ -29,12 +31,14 @@ export default function TransferForm({
         Not ours? Transfer to{" "}
         <select
           required
-          value={targetDepartment}
-          onChange={(event) => setTargetDepartment(event.target.value)}
+          value={targetDepartment ?? ""}
+          onChange={(event) =>
+            setTargetDepartment(otherDepartments.find((department) => department === event.target.value) ?? null)
+          }
           className={compactFieldClass}
         >
           <option value="">Choose…</option>
-          {DEPARTMENTS.filter((department) => department !== currentDepartment).map((department) => (
+          {otherDepartments.map((department) => (
             <option key={department}>{department}</option>
           ))}
         </select>

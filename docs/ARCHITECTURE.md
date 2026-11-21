@@ -12,9 +12,9 @@ Browser (React client components)
 src/app/api/**/route.ts      HTTP layer: parse input, authorise, call a service, shape the response
         │
         ▼
-src/lib/services/*           Use cases: report submission, staff ticket actions
+src/lib/services/*           Use cases: report submission, staff actions, proof of fix, messages
         │
-        ├── src/lib/rules.ts, workflow.ts, schemas.ts   Pure domain logic (no I/O, unit-tested)
+        ├── src/lib/rules.ts, workflow.ts, schemas.ts   Domain logic, unit-tested (deterministic apart from signing keys and random ids)
         ├── src/lib/gemini.ts + src/lib/ai/*            AI features behind one client with fallbacks
         ├── src/lib/auth.ts, security.ts, otp.ts        Access control, rate limits, file checks, OTP
         ├── src/lib/store.ts, records.ts                Persistence behind a `Store` interface

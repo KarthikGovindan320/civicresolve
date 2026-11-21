@@ -4,11 +4,13 @@
 // citizen confirms or reopens. Also covers validation, rate limiting,
 // role-based access control and privacy of reporter data.
 // Runs against a throwaway local data directory and the rule-based classifier
-// (no API key), so it is deterministic and needs no network.
+// (no API key), so it is deterministic and needs no network. Rate limits are
+// per client IP, so every request comes from its own address unless a test is
+// about the limit itself.
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { issueOtp } from "@/lib/otp";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "civic-test-"));
@@ -21,6 +23,7 @@ process.env.DEPT_PASSCODES = JSON.stringify({
 });
 delete process.env.GEMINI_API_KEY;
 delete process.env.SMTP_URL;
+afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 let api: {
   list: typeof import("@/app/api/tickets/route");
@@ -145,10 +148,36 @@ describe("citizen reporting (POST /api/tickets)", () => {
     expect(tokenOf(second.privateLink)).not.toBe(tokenOf(first.privateLink));
   });
 
-  it("rate-limits a single client that floods the endpoint", async () => {
+  it("rate-limits a single client that floods the endpoint, and says when to retry", async () => {
     const statuses: number[] = [];
-    for (let i = 0; i < 11; i++) statuses.push((await api.list.POST(report({ title: "x" }, "9.9.9.9"))).status);
-    expect(statuses.at(-1)).toBe(429);
+    for (let i = 0; i < 10; i++) {
+      // Each report is far from the others, so none is merged as a duplicate.
+      const spot = { lat: String(11 + i * 0.01), lng: "78.0" };
+      statuses.push((await api.list.POST(report({ title: "Pothole", ...spot }, "9.9.9.9"))).status);
+    }
+    expect(statuses).toEqual(Array(10).fill(201));
+    const blocked = await api.list.POST(report({ title: "Pothole", lat: "11.5", lng: "78.0" }, "9.9.9.9"));
+    expect(blocked.status).toBe(429);
+    expect(Number(blocked.headers.get("Retry-After"))).toBeGreaterThan(0);
+  });
+
+  it("refuses a body declaring more than the largest allowed upload (413)", async () => {
+    const huge = new Request("http://test/api/tickets", {
+      method: "POST",
+      body: new FormData(),
+      headers: { "content-length": "999999999", "x-forwarded-for": `10.1.0.${++ipCounter}` },
+    });
+    expect((await api.list.POST(huge)).status).toBe(413);
+  });
+
+  it("rejects a voice note that is not audio, or too long", async () => {
+    const loc = { lat: "12.95", lng: "79.05" };
+    const notAudio = new Blob(["%PDF-1.7 not a recording at all"], { type: "audio/webm" });
+    const bad = await api.list.POST(report({ title: "Pothole", ...loc, audio: notAudio }));
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toMatch(/audio recording/i);
+    const tooLong = new Blob([new Uint8Array(4_000_001)], { type: "audio/webm" });
+    expect((await api.list.POST(report({ title: "Pothole", ...loc, audio: tooLong }))).status).toBe(413);
   });
 });
 
@@ -167,9 +196,24 @@ describe("public tracking (GET)", () => {
     expect((await api.one.GET(new Request("http://t"), ctx("cr-1004"))).status).toBe(200);
     expect((await api.one.GET(new Request("http://t"), ctx("CR-0"))).status).toBe(404);
   });
+
+  it("gives each anonymous client a generous but finite budget for the full list", async () => {
+    const from = { headers: { "x-forwarded-for": "9.9.9.10" } };
+    const statuses: number[] = [];
+    for (let i = 0; i < 301; i++) statuses.push((await api.list.GET(new Request("http://t", from))).status);
+    expect(statuses.slice(0, 300).every((status) => status === 200)).toBe(true);
+    expect(statuses[300]).toBe(429);
+    // Staff are not counted against the public budget.
+    const signedIn = { headers: { ...from.headers, ...staff("test-admin") } };
+    expect((await api.list.GET(new Request("http://t", signedIn))).status).toBe(200);
+  });
 });
 
-describe("department workflow: accept → message → fix → citizen confirms", () => {
+// The tests in each of the next two blocks are consecutive steps in the life of one
+// ticket, created in beforeAll: each step relies on the state the previous one left.
+// LIFECYCLE pins that order explicitly: never concurrent, never shuffled.
+const LIFECYCLE = { concurrent: false, shuffle: false };
+describe("department workflow: accept → message → fix → citizen confirms", LIFECYCLE, () => {
   let id = "";
   let token = "";
   beforeAll(async () => {
@@ -243,7 +287,7 @@ describe("department workflow: accept → message → fix → citizen confirms",
   });
 });
 
-describe("transfer and reopen", () => {
+describe("transfer and reopen", LIFECYCLE, () => {
   let id = "";
   let token = "";
   beforeAll(async () => {
@@ -292,19 +336,46 @@ describe("transfer and reopen", () => {
 describe("city admin overrides", () => {
   it("refuses overrides from departments, allows them for the admin", async () => {
     expect((await patch("CR-1010", { action: "update", status: "Resolved" }, "san-pass")).status).toBe(403);
-    const t = await (await patch("CR-1007", { status: "In Progress", note: "Crew assigned" }, "test-admin")).json();
+    const t = await (
+      await patch("CR-1007", { action: "update", status: "In Progress", note: "Crew assigned" }, "test-admin")
+    ).json();
     expect(t.status).toBe("In Progress");
   });
 
   it("ignores invalid values instead of writing them", async () => {
-    const t = await (await patch("CR-1010", { status: "Deleted", category: "Aliens" }, "test-admin")).json();
+    const t = await (
+      await patch("CR-1010", { action: "update", status: "Deleted", category: "Aliens" }, "test-admin")
+    ).json();
     expect(t.status).toBe("Reported");
     expect(t.category).toBe("Garbage");
   });
 
   it("cannot downgrade a safety-critical issue", async () => {
-    const t = await (await patch("CR-1008", { priority: "Low" }, "test-admin")).json();
+    const t = await (await patch("CR-1008", { action: "update", priority: "Low" }, "test-admin")).json();
     expect(t.priority).toBe("Critical"); // open manhole
+  });
+
+  it("rejects a body without a known action", async () => {
+    const res = await patch("CR-1008", { priority: "Low" }, "test-admin");
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Unknown action." });
+  });
+
+  it("accepts a lower-case ticket id", async () => {
+    expect((await patch("cr-1008", { action: "note", note: "Barricade placed" }, "test-admin")).status).toBe(200);
+  });
+
+  it("caps staff actions per client, before the ticket is even looked up", async () => {
+    const noteOn = (id: string) =>
+      api.one.PATCH(
+        new Request("http://t", {
+          method: "PATCH",
+          body: JSON.stringify({ action: "note", note: "x" }),
+          headers: { ...staff("test-admin"), "x-forwarded-for": "9.9.9.11" },
+        }),
+        ctx(id),
+      );
+    await expectBudget(120, () => noteOn("CR-0"));
   });
 });
 
@@ -441,5 +512,154 @@ describe("phone verification (OTP) and the unverified review bucket", () => {
       );
     expect(statuses.slice(0, 3)).toEqual([201, 201, 201]);
     expect(statuses[3]).toBe(429);
+  });
+});
+
+// =============================================================================
+// Route branches beyond the happy path: proof of fix, conversation and the
+// citizen's answer, including each endpoint's own request budget.
+// =============================================================================
+
+/** A fresh ticket (routed to Sanitation) and its reporter's private-link token. */
+async function newGarbageTicket(lat: string) {
+  const body = await (
+    await api.list.POST(report({ title: "Garbage dumped", description: "garbage pile", lat, lng: "79.95" }))
+  ).json();
+  return { id: body.ticket.id as string, token: tokenOf(body.privateLink) };
+}
+/** `count` requests from one client: every status but the last, then the last response. */
+async function flood(count: number, send: () => Promise<Response>) {
+  const statuses: number[] = [];
+  for (let i = 1; i < count; i++) statuses.push((await send()).status);
+  return { statuses, last: await send() };
+}
+/**
+ * Send `budget` + 1 requests for an unknown ticket from one client: the budget
+ * is spent before the ticket is looked up, so all but the last are 404s, and the
+ * last is a 429 that says when to retry.
+ */
+async function expectBudget(budget: number, send: () => Promise<Response>) {
+  const { statuses, last } = await flood(budget + 1, send);
+  expect(statuses).toEqual(Array(budget).fill(404));
+  expect(last.status).toBe(429);
+  expect(Number(last.headers.get("Retry-After"))).toBeGreaterThan(0);
+}
+
+describe("proof of fix (POST /api/tickets/[id]/resolve)", () => {
+  it("lets the city admin close without a photo, recorded as unchecked", async () => {
+    const { id } = await newGarbageTicket("12.051");
+    const res = await api.resolve.POST(
+      multipart({ note: "Duplicate of an older report" }, staff("test-admin")),
+      ctx(id),
+    );
+    expect(res.status).toBe(200);
+    const t = await res.json();
+    expect(t.status).toBe("Resolved");
+    expect(t.resolution).toMatchObject({ hasPhoto: false, aiVerdict: "unclear", by: "City Admin" });
+    expect(t.resolution.aiReason).toBe("No after-photo was provided.");
+  });
+
+  it("needs a note (400) and refuses a ticket that is already resolved (409)", async () => {
+    const { id } = await newGarbageTicket("12.052");
+    const noNote = await api.resolve.POST(multipart({ photo: JPEG }, staff("san-pass")), ctx(id));
+    expect(noNote.status).toBe(400);
+    expect((await noNote.json()).error).toMatch(/describe what was done/i);
+    expect(
+      (await api.resolve.POST(multipart({ note: "Cleared", photo: JPEG }, staff("san-pass")), ctx(id))).status,
+    ).toBe(200);
+    const again = await api.resolve.POST(multipart({ note: "Cleared again", photo: JPEG }, staff("san-pass")), ctx(id));
+    expect(again.status).toBe(409);
+  });
+
+  it("caps resolves per client, since each one may call Gemini", async () => {
+    const send = () =>
+      api.resolve.POST(
+        multipart({ note: "x" }, { ...staff("test-admin"), "x-forwarded-for": "9.9.9.12" }),
+        ctx("CR-0"),
+      );
+    await expectBudget(30, send);
+  });
+});
+
+describe("conversation (POST /api/tickets/[id]/messages)", () => {
+  it("rejects an empty message (400) and an unknown ticket (404)", async () => {
+    const empty = await message("CR-1004", "   ", staff("test-admin"));
+    expect(empty.status).toBe(400);
+    expect(await empty.json()).toEqual({ error: "Message is empty." });
+    expect((await message("CR-0", "Hello", staff("test-admin"))).status).toBe(404);
+  });
+
+  it("accepts a lower-case ticket id and keeps the author's role", async () => {
+    const t = await (await message("cr-1004", "Crew on the way", staff("test-admin"))).json();
+    expect(t.messages.at(-1)).toMatchObject({ from: "admin", text: "Crew on the way" });
+  });
+
+  it("caps messages per client", async () => {
+    const send = () =>
+      api.messages.POST(
+        new Request("http://t", {
+          method: "POST",
+          body: JSON.stringify({ text: "hello" }),
+          headers: { "content-type": "application/json", "x-forwarded-for": "9.9.9.13" },
+        }),
+        ctx("CR-0"),
+      );
+    await expectBudget(10, send);
+  });
+});
+
+describe("citizen's answer (POST /api/tickets/[id]/confirm)", () => {
+  it("answers 409 while the fix hasn't been reported, and 400 for an unknown decision", async () => {
+    const { id, token } = await newGarbageTicket("12.053");
+    const citizen = { "x-citizen-key": token };
+    expect((await api.confirm.POST(multipart({ decision: "confirm" }, citizen), ctx(id))).status).toBe(409);
+    await api.resolve.POST(multipart({ note: "Cleared", photo: JPEG }, staff("san-pass")), ctx(id));
+    const unknown = await api.confirm.POST(multipart({ decision: "maybe" }, citizen), ctx(id.toLowerCase()));
+    expect(unknown.status).toBe(400);
+    expect((await unknown.json()).error).toMatch(/confirm' or 'reopen/);
+  });
+
+  it("caps answers per client", async () => {
+    const send = () =>
+      api.confirm.POST(multipart({ decision: "confirm" }, { "x-forwarded-for": "9.9.9.14" }), ctx("CR-0"));
+    await expectBudget(10, send);
+  });
+});
+
+describe("one-time codes (POST /api/otp) budgets", () => {
+  let otpApi: typeof import("@/app/api/otp/route");
+  beforeAll(async () => {
+    otpApi = await import("@/app/api/otp/route");
+  });
+  const ask = (phone: string, ip: string) =>
+    otpApi.POST(
+      new Request("http://t/api/otp", {
+        method: "POST",
+        body: JSON.stringify({ phone }),
+        headers: { "content-type": "application/json", "x-forwarded-for": ip },
+      }),
+    );
+
+  it("limits how many codes one device can request, for any numbers", async () => {
+    let n = 0;
+    const { statuses, last } = await flood(11, () => ask(`93000000${String(++n).padStart(2, "0")}`, "9.9.9.15"));
+    expect(statuses).toEqual(Array(10).fill(200));
+    expect(last.status).toBe(429);
+    expect(Number(last.headers.get("Retry-After"))).toBeGreaterThan(0);
+  });
+
+  it("limits how many codes one number can receive, from any devices", async () => {
+    let n = 0;
+    const { statuses, last } = await flood(11, () => ask("9400000001", `9.9.10.${++n}`));
+    expect(statuses).toEqual(Array(10).fill(200));
+    expect(last.status).toBe(429);
+    expect(Number(last.headers.get("Retry-After"))).toBeGreaterThan(0);
+  });
+
+  it("rejects a body without a phone number", async () => {
+    const res = await otpApi.POST(
+      new Request("http://t/api/otp", { method: "POST", body: "{}", headers: { "x-forwarded-for": "9.9.9.16" } }),
+    );
+    expect(res.status).toBe(400);
   });
 });

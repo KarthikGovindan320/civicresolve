@@ -13,8 +13,12 @@
 // Zero-config fallback: with no GOOGLE_MAPS_API_KEY, the same box does a plain search
 // against OpenStreetMap Nominatim, run on Enter only, because Nominatim's usage policy forbids
 // typeahead.
+// Every response is parsed with a schema before use, like any input crossing a
+// trust boundary: an unexpected answer is an error, never a half-filled result.
 // =============================================================================
 import "server-only";
+import { z } from "zod";
+import { CITY_CENTRE } from "./constants";
 import { describeError, log } from "./log";
 
 /** One entry in the address dropdown. */
@@ -36,8 +40,8 @@ export interface PlaceLocation {
 
 // Results are biased (not restricted) to the city this deployment serves.
 const CITY_BIAS = {
-  lat: Number(process.env.CITY_LAT || 12.9165),
-  lng: Number(process.env.CITY_LNG || 79.1325),
+  lat: Number(process.env.CITY_LAT || CITY_CENTRE.lat),
+  lng: Number(process.env.CITY_LNG || CITY_CENTRE.lng),
   radiusM: 50_000, // the largest bias circle the Places API accepts
 };
 /** Half-width of the OpenStreetMap view box in degrees: roughly 50 km around the city. */
@@ -48,6 +52,50 @@ const MAX_SUGGESTIONS = 5;
 const OSM_SECONDARY_PARTS = 3;
 const MAX_LOGGED_PLACES_ERROR_CHARS = 80;
 const GOOGLE_PLACES_URL = "https://places.googleapis.com/v1";
+
+const LabelSchema = z.object({ text: z.string() });
+
+/** Google's autocomplete answer: only predictions that carry a place id are kept. */
+const AutocompleteResponseSchema = z.object({
+  suggestions: z
+    .array(
+      z.object({
+        placePrediction: z
+          .object({
+            placeId: z.string().min(1),
+            text: LabelSchema.optional(),
+            structuredFormat: z
+              .object({ mainText: LabelSchema.optional(), secondaryText: LabelSchema.optional() })
+              .optional(),
+          })
+          .optional(),
+      }),
+    )
+    .default([]),
+});
+
+/** Google's place details for the fields we ask for (see the field mask below). */
+const PlaceDetailsResponseSchema = z.object({
+  location: z.object({ latitude: z.number(), longitude: z.number() }),
+  formattedAddress: z.string().default(""),
+});
+
+/** Nominatim's search results; it sends coordinates as strings. */
+const OsmSearchResponseSchema = z.array(
+  z.object({ place_id: z.number(), display_name: z.string(), lat: z.coerce.number(), lon: z.coerce.number() }),
+);
+
+/** The body of a successful response, parsed by `schema`. Throws an error code (never the body) otherwise. */
+async function parseResponse<Schema extends z.ZodType>(
+  res: Response,
+  schema: Schema,
+  name: string,
+): Promise<z.output<Schema>> {
+  if (!res.ok) throw new Error(`${name}_${res.status}`);
+  const parsed = schema.safeParse(await res.json().catch(() => null));
+  if (!parsed.success) throw new Error(`${name}_unexpected_response`);
+  return parsed.data;
+}
 
 const mapsApiKey = () => process.env.GOOGLE_MAPS_API_KEY ?? "";
 
@@ -70,19 +118,10 @@ export async function autocomplete(input: string, sessionToken: string): Promise
     }),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  if (!res.ok) throw new Error(`places_autocomplete_${res.status}`);
-  const data = (await res.json()) as {
-    suggestions?: {
-      placePrediction?: {
-        placeId: string;
-        text?: { text: string };
-        structuredFormat?: { mainText?: { text: string }; secondaryText?: { text: string } };
-      };
-    }[];
-  };
-  return (data.suggestions ?? [])
+  const data = await parseResponse(res, AutocompleteResponseSchema, "places_autocomplete");
+  return data.suggestions
     .map((suggestion) => suggestion.placePrediction)
-    .filter((prediction): prediction is NonNullable<typeof prediction> => Boolean(prediction?.placeId))
+    .filter((prediction) => prediction !== undefined)
     .slice(0, MAX_SUGGESTIONS)
     .map((prediction) => ({
       id: prediction.placeId,
@@ -100,10 +139,8 @@ export async function placeDetails(placeId: string, sessionToken: string): Promi
     headers: { "X-Goog-Api-Key": mapsApiKey(), "X-Goog-FieldMask": "location,formattedAddress" },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  if (!res.ok) throw new Error(`places_details_${res.status}`);
-  const place = (await res.json()) as { location?: { latitude: number; longitude: number }; formattedAddress?: string };
-  if (!place.location) throw new Error("places_details_no_location");
-  return { lat: place.location.latitude, lng: place.location.longitude, address: place.formattedAddress ?? "" };
+  const place = await parseResponse(res, PlaceDetailsResponseSchema, "places_details");
+  return { lat: place.location.latitude, lng: place.location.longitude, address: place.formattedAddress };
 }
 
 /** Fallback without a Google key: OpenStreetMap Nominatim search (on Enter only, never per keystroke). */
@@ -123,16 +160,15 @@ export async function osmSearch(query: string): Promise<PlaceSuggestion[]> {
     headers: { "User-Agent": "CivicResolve/1.0 (civic issue reporting app)", "Accept-Language": "en" },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  if (!res.ok) throw new Error(`osm_search_${res.status}`);
-  const rows = (await res.json()) as { place_id: number; display_name: string; lat: string; lon: string }[];
+  const rows = await parseResponse(res, OsmSearchResponseSchema, "osm_search");
   return rows.map((row) => {
     const [main, ...addressParts] = row.display_name.split(", ");
     return {
       id: `osm-${row.place_id}`,
       main,
       secondary: addressParts.slice(0, OSM_SECONDARY_PARTS).join(", "),
-      lat: Number(row.lat),
-      lng: Number(row.lon),
+      lat: row.lat,
+      lng: row.lon,
     };
   });
 }

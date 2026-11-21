@@ -34,7 +34,7 @@ const LazyMapView = dynamic(() => import("./MapView"), {
  * downloaded only on pages that show a map. A skeleton of the same height
  * keeps the layout from jumping while it loads.
  */
-export default function Map(props: MapViewProps) {
+export default function LazyMap(props: MapViewProps) {
   return (
     <MapHeight.Provider value={props.height ?? DEFAULT_MAP_HEIGHT}>
       <LazyMapView {...props} />

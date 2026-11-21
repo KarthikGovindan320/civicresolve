@@ -9,12 +9,17 @@
 //     reopens it, or stays silent for AUTO_CLOSE_DAYS
 //   • Private citizen links: anonymous, unguessable, stored only as salts
 //   • Audience-specific views, so private data never leaks (see toPublic / toPrivate)
-// Everything here is a function of the ticket and the clock, with no cron
-// jobs or background workers, which keeps the Cloud Run deployment stateless.
+// Deadlines, auto-close and views are worked out from the ticket and the clock
+// when a ticket is read, with no cron jobs or background workers, which keeps
+// the Cloud Run deployment stateless. This module does no database or network
+// I/O; link tokens and photo signatures are HMACs keyed by the server secret
+// (secrets.ts), and new salts and message ids come from crypto.randomBytes.
 // Covered by tests/workflow.test.ts and tests/api.test.ts.
 // =============================================================================
 
 import { createHmac, randomBytes } from "crypto";
+import { DAY_MS, HOUR_MS } from "./constants";
+import { photoPath, type PhotoVariant } from "./photos";
 import { signingSecret } from "./secrets";
 import { safeEqual } from "./security";
 import {
@@ -26,18 +31,17 @@ import {
   type PrivateTicket,
   type PublicTicket,
   type Reporter,
+  type Resolution,
   type Ticket,
 } from "./types";
 
-const HOUR_MS = 36e5;
-const DAY_MS = 24 * HOUR_MS;
 const REPORTER_SALT_BYTES = 16;
 const MESSAGE_ID_BYTES = 6;
 
-// Server secret for private links. LINK_SECRET comes from Secret Manager in
-// production. If it's missing we derive one from the admin passcode, which is
-// stable across Cloud Run instances, rather than a random value that would
-// break links on every restart.
+// Server secret for private links and photo signatures: LINK_SECRET, from
+// Secret Manager in production. It must be stable across Cloud Run instances
+// and restarts, or every link already sent would stop working; when it is
+// missing in production, signing refuses to run (see secrets.ts).
 const linkSecret = () => signingSecret("LINK_SECRET");
 
 /**
@@ -57,7 +61,7 @@ export function tokenFor(salt: string): string {
  * by the server, it is bound to one ticket and one photo, and the server hands it out only on
  * pages the viewer is already allowed to see (the reporter's private page).
  */
-export function photoSignature(ticketId: string, variant: string): string {
+export function photoSignature(ticketId: string, variant: PhotoVariant): string {
   return createHmac("sha256", linkSecret()).update(`photo|${ticketId}|${variant}`).digest("base64url").slice(0, 32);
 }
 
@@ -65,15 +69,10 @@ export function photoSignature(ticketId: string, variant: string): string {
  * URL of one of a ticket's photos. Public tickets get a plain URL; held tickets get a signed one
  * (see photoSignature), so their photos stay private even though the id is guessable.
  */
-export function photoUrl(
-  ticket: Pick<Ticket, "id" | "verification">,
-  variant: "before" | "after" | "reopen",
-  version?: string,
-): string {
-  const params = new URLSearchParams({ v: variant });
-  if (isHeld(ticket)) params.set("s", photoSignature(ticket.id, variant));
-  if (version) params.set("t", version);
-  return `/api/tickets/${ticket.id}/image?${params}`;
+export function photoUrl(ticket: Pick<Ticket, "id" | "verification">, variant: PhotoVariant, version?: string): string {
+  const path = photoPath(ticket.id, variant, version);
+  // The signature is base64url, so it needs no further encoding in the query string.
+  return isHeld(ticket) ? `${path}&s=${photoSignature(ticket.id, variant)}` : path;
 }
 
 /** Create a reporter record and the private-link token that goes (once) to the person who submitted. */
@@ -110,12 +109,6 @@ export function slaDueAt(ticket: Ticket): Date {
 /** Whether an unresolved ticket has passed its SLA deadline. */
 export function isOverdue(ticket: Ticket, now = Date.now()): boolean {
   return ticket.status !== "Resolved" && now > slaDueAt(ticket).getTime();
-}
-
-/** Was it fixed within the SLA? Null while unresolved. Used for each department's on-time rate. */
-export function resolvedOnTime(ticket: Ticket): boolean | null {
-  if (ticket.status !== "Resolved" || !ticket.resolvedAt) return null;
-  return Date.parse(ticket.resolvedAt) <= slaDueAt(ticket).getTime();
 }
 
 /**
@@ -176,4 +169,14 @@ export function appendHistory<T extends Ticket>(ticket: T, entry: HistoryEntry):
 /** A copy of the ticket with one more message in its private conversation. */
 export function appendMessage<T extends Ticket>(ticket: T, message: Message): T {
   return { ...ticket, messages: [...(ticket.messages ?? []), message] };
+}
+
+/**
+ * The proof-of-fix record for a ticket closed without an after-photo: by the
+ * city admin (a status override, or closing a duplicate or invalid report), or
+ * a demo ticket fixed before photo checks existed. Nothing could be checked, so
+ * the AI verdict is "unclear" and the citizen still confirms or reopens.
+ */
+export function resolutionWithoutPhoto({ note, by, at }: Pick<Resolution, "note" | "by" | "at">): Resolution {
+  return { note, hasPhoto: false, aiVerdict: "unclear", aiReason: "No after-photo was provided.", by, at };
 }

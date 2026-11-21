@@ -1,4 +1,4 @@
-import { formatDateTime } from "@/lib/client/format";
+import { formatDateTime } from "@/lib/format";
 import type { PublicTicket, Resolution } from "@/lib/types";
 
 /** Read-only record of a resolved ticket: the reported fix, Gemini's check of the after photo, and the citizen's answer. */

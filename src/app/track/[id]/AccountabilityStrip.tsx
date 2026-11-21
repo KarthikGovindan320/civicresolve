@@ -1,4 +1,4 @@
-import { formatDateTime, formatDay } from "@/lib/client/format";
+import { formatDateTime, formatDay } from "@/lib/format";
 import type { Translate } from "@/lib/i18n";
 import type { PublicTicket } from "@/lib/types";
 

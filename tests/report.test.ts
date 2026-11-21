@@ -7,6 +7,7 @@ import {
   buildTicket,
   isValidLocation,
   parseCoordinate,
+  parseEmail,
   parseUserCategory,
   receiptText,
   resolveRouting,
@@ -250,5 +251,15 @@ describe("buildTicket", () => {
     expect(ticket.priority).toBe("Critical");
     expect(ticket.basePriority).toBe("Medium");
     expect(ticket.priorityReason).toBe("Safety rule: live wire. Dark stretch at night.");
+  });
+});
+
+describe("parseEmail", () => {
+  it("treats a blank email as none, normalises a valid one and flags anything else", () => {
+    expect(parseEmail("   ")).toBeNull();
+    expect(parseEmail("  Citizen@Example.COM ")).toBe("citizen@example.com");
+    expect(parseEmail("not-an-email")).toBe("invalid");
+    expect(parseEmail("two words@example.com")).toBe("invalid");
+    expect(parseEmail(`${"a".repeat(250)}@example.com`)).toBe("invalid"); // longer than LIMITS.email
   });
 });

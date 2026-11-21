@@ -109,13 +109,17 @@ export default function VoiceRecorder({ onChange }: { onChange: (recording: Blob
         {phase === "done" && playbackUrl && (
           <>
             <audio controls src={playbackUrl} className="h-9" aria-label={t("voice.playback")} />
-            <button type="button" onClick={clear} className="text-sm text-slate-600 underline">
+            <button
+              type="button"
+              onClick={clear}
+              className="inline-flex min-h-6 items-center text-sm text-slate-600 underline"
+            >
               {t("voice.remove")}
             </button>
           </>
         )}
       </div>
-      <p className="mt-2 text-xs text-slate-500">{t("voice.hint")}</p>
+      <p className="mt-2 text-xs text-slate-600">{t("voice.hint")}</p>
       {error && (
         <p role="alert" className="mt-1 text-sm text-red-700">
           {error}

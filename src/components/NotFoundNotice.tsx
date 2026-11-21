@@ -12,7 +12,7 @@ export default async function NotFoundNotice({ kind }: { kind: "page" | "ticket"
   const isTicket = kind === "ticket";
   return (
     <div className="mx-auto max-w-md rounded-xl border border-slate-200 bg-white p-6 text-center shadow-sm">
-      <p className="font-mono text-sm text-slate-500">404</p>
+      <p className="font-mono text-sm text-slate-600">404</p>
       <h1 className="mt-1 text-xl font-semibold">{t(isTicket ? "notFound.ticketTitle" : "notFound.title")}</h1>
       <p className="mt-2 text-sm text-slate-600">{t(isTicket ? "notFound.ticketBody" : "notFound.body")}</p>
       <div className="mt-5 flex flex-wrap justify-center gap-3">
