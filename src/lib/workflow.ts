@@ -15,6 +15,7 @@
 // =============================================================================
 
 import { createHmac, randomBytes } from "crypto";
+import { signingSecret } from "./secrets";
 import { safeEqual } from "./security";
 import {
   AUTO_CLOSE_DAYS,
@@ -37,9 +38,7 @@ const MESSAGE_ID_BYTES = 6;
 // production. If it's missing we derive one from the admin passcode, which is
 // stable across Cloud Run instances, rather than a random value that would
 // break links on every restart.
-function linkSecret(): string {
-  return process.env.LINK_SECRET || `civicresolve-link:${process.env.ADMIN_PASSCODE || "dev-only-secret"}`;
-}
+const linkSecret = () => signingSecret("LINK_SECRET");
 
 /**
  * The private-link token for a reporter salt: HMAC-SHA256(secret, salt). 256
@@ -141,8 +140,8 @@ export function withAutoClose(ticket: Ticket, now = Date.now()): Ticket {
  */
 export function toPublic(ticket: Ticket, now = Date.now()): PublicTicket {
   const current = withAutoClose(ticket, now);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { reporters, messages, ...publicFields } = current;
+  // Reporter records (link salts, emails, phone numbers) are dropped here and never leave the server.
+  const { reporters: _reporters, messages, ...publicFields } = current;
   return {
     ...publicFields,
     messageCount: messages?.length ?? 0,

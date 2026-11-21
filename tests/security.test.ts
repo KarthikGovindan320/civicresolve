@@ -1,7 +1,7 @@
 // Request-level protections (src/lib/security.ts, src/lib/auth.ts).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isAdmin } from "@/lib/auth";
-import { clientIp, isAllowedAudio, looksLikeAudio, rateLimit, safeEqual, sniffImageType } from "@/lib/security";
+import { clientIp, rateLimit, safeEqual, sniffAudioType, sniffImageType } from "@/lib/security";
 
 const b64 = (bytes: number[] | string) =>
   Buffer.from(typeof bytes === "string" ? bytes : Uint8Array.from(bytes)).toString("base64");
@@ -17,15 +17,6 @@ describe("image signature sniffing", () => {
   it("rejects HTML or scripts disguised as images", () => {
     expect(sniffImageType(b64("<html><script>alert(1)</script>"))).toBeNull();
     expect(sniffImageType(b64("#!/bin/sh\nrm -rf /"))).toBeNull();
-  });
-});
-
-describe("audio allow-list", () => {
-  it("accepts browser recording formats and rejects others", () => {
-    expect(isAllowedAudio("audio/webm;codecs=opus")).toBe(true);
-    expect(isAllowedAudio("audio/mp4")).toBe(true);
-    expect(isAllowedAudio("text/html")).toBe(false);
-    expect(isAllowedAudio("application/javascript")).toBe(false);
   });
 });
 
@@ -74,12 +65,19 @@ describe("hardening", () => {
     expect(clientIp(req)).toBe("203.0.113.9");
     expect(clientIp(new Request("http://t"))).toBe("local");
   });
-  it("accepts real audio signatures and rejects other files labelled as audio", () => {
-    const b64 = (bytes: number[]) => Buffer.from(bytes).toString("base64");
-    expect(looksLikeAudio(b64([0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0]))).toBe(true); // WebM
-    expect(looksLikeAudio(Buffer.from("OggS\0\0\0\0").toString("base64"))).toBe(true);
-    expect(looksLikeAudio(Buffer.from("\0\0\0\x20ftypM4A ").toString("base64"))).toBe(true);
-    expect(looksLikeAudio(Buffer.from("%PDF-1.7 hello").toString("base64"))).toBe(false);
-    expect(looksLikeAudio(b64([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]))).toBe(false); // PNG
+  it("types audio by its signature and rejects other files labelled as audio", () => {
+    const b64 = (bytes: number[]) => Buffer.from([...bytes, ...new Array(16).fill(0)]).toString("base64");
+    const text = (value: string) => b64([...Buffer.from(value)]);
+    expect(sniffAudioType(b64([0x1a, 0x45, 0xdf, 0xa3]))).toBe("audio/webm");
+    expect(sniffAudioType(text("OggS"))).toBe("audio/ogg");
+    expect(sniffAudioType(text("\0\0\0\x20ftypM4A "))).toBe("audio/mp4");
+    expect(sniffAudioType(text("RIFF\0\0\0\0WAVE"))).toBe("audio/wav");
+    expect(sniffAudioType(text("fLaC"))).toBe("audio/flac");
+    expect(sniffAudioType(text("ID3"))).toBe("audio/mpeg");
+    expect(sniffAudioType(b64([0xff, 0xfb]))).toBe("audio/mpeg");
+    expect(sniffAudioType(b64([0xff, 0xf1]))).toBe("audio/aac");
+    expect(sniffAudioType(text("%PDF-1.7 hello"))).toBeNull();
+    expect(sniffAudioType(b64([0x89, 0x50, 0x4e, 0x47]))).toBeNull(); // PNG
+    expect(sniffAudioType(Buffer.from("OggS").toString("base64"))).toBeNull(); // too short to be a recording
   });
 });

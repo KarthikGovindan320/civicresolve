@@ -5,6 +5,18 @@ import nextTs from "eslint-config-next/typescript";
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
+  // Application code: no non-null assertions (guard or narrow instead), and a
+  // leading underscore marks a value that is deliberately dropped.
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    rules: {
+      "@typescript-eslint/no-non-null-assertion": "error",
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", ignoreRestSiblings: false },
+      ],
+    },
+  },
   // Server code stays in small, flat functions that are easy to test.
   {
     files: ["src/lib/**/*.ts", "src/app/api/**/*.ts"],

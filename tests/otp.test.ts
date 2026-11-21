@@ -1,5 +1,5 @@
 // Unit tests for the stateless OTP scheme (lib/otp.ts).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { OTP_TTL_MS, issueOtp, normalizePhone, verifyOtp } from "@/lib/otp";
 
 describe("normalizePhone", () => {
@@ -28,5 +28,53 @@ describe("issueOtp / verifyOtp", () => {
     expect(verifyOtp(phone, code, challenge, now + OTP_TTL_MS + 1)).toBe(false);
     const [, mac] = challenge.split(".");
     expect(verifyOtp(phone, code, `${now + OTP_TTL_MS * 10}.${mac}`, now)).toBe(false);
+  });
+});
+
+describe("production safeguards", () => {
+  const withEnv = async (env: Record<string, string | undefined>, check: () => Promise<void> | void) => {
+    vi.resetModules();
+    for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
+    try {
+      await check();
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  };
+
+  it("refuses to sign anything in production without a configured secret", () =>
+    withEnv({ NODE_ENV: "production", OTP_SECRET: "", LINK_SECRET: "" }, async () => {
+      const { issueOtp: issue } = await import("@/lib/otp");
+      expect(() => issue("+919876543210")).toThrow("OTP_SECRET or LINK_SECRET must be set in production.");
+    }));
+
+  it("shows demo codes in production only when explicitly switched on", () =>
+    withEnv({ NODE_ENV: "production", SMS_PROVIDER: "", OTP_DEMO_CODES: "" }, async () => {
+      const otp = await import("@/lib/otp");
+      expect(otp.demoCodesAllowed()).toBe(false);
+      vi.stubEnv("OTP_DEMO_CODES", "true");
+      expect(otp.demoCodesAllowed()).toBe(true);
+      vi.stubEnv("SMS_PROVIDER", "some-gateway");
+      expect(otp.demoCodesAllowed()).toBe(false);
+    }));
+
+  it("answers 503 instead of issuing a code when neither SMS nor demo codes are available", () =>
+    withEnv({ NODE_ENV: "production", SMS_PROVIDER: "", OTP_DEMO_CODES: "", LINK_SECRET: "test-secret" }, async () => {
+      const { POST } = await import("@/app/api/otp/route");
+      const response = await POST(
+        new Request("http://t/api/otp", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.77" },
+          body: JSON.stringify({ phone: "9876543210" }),
+        }),
+      );
+      expect(response.status).toBe(503);
+      expect(await response.json()).not.toHaveProperty("devCode");
+    }));
+
+  it("never pretends a text was sent while no SMS gateway is implemented", async () => {
+    const { sendSms } = await import("@/lib/otp");
+    await expect(sendSms("+919876543210", "hello")).rejects.toThrow("not implemented");
   });
 });

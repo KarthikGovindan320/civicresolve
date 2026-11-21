@@ -1,15 +1,15 @@
 // =============================================================================
 // POST /api/otp: send a one-time code to the citizen's phone (anti-spam)
 // -----------------------------------------------------------------------------
-// Body: { phone }. Returns { challenge, expiresAt, phone (normalised), stub }, plus, in stub
-// mode only (no SMS gateway yet), { devCode } so the demo can show "use this code".
+// Body: { phone }. Returns { challenge, expiresAt, phone (normalised), stub }, plus, in demo
+// mode only (no SMS gateway yet, see demoCodesAllowed), { devCode } so the form can show it.
 // Rate-limited per IP and per phone number, so it can't be used to spam someone's phone.
 // The phone number is never written to logs.
 // =============================================================================
 import { NextResponse } from "next/server";
 import { NO_STORE_HEADERS, fail, readJsonBody } from "@/lib/http";
 import { log } from "@/lib/log";
-import { OTP_TTL_MINUTES, issueOtp, normalizePhone, sendSms, smsEnabled } from "@/lib/otp";
+import { OTP_TTL_MINUTES, demoCodesAllowed, issueOtp, normalizePhone, sendSms, smsEnabled } from "@/lib/otp";
 import { clientIp, rateLimit } from "@/lib/security";
 
 /** Issue a one-time code and the signed challenge the report form must send back with it. */
@@ -30,8 +30,13 @@ export async function POST(req: Request) {
     }
   }
 
+  // Fail closed: with neither an SMS gateway nor demo codes switched on, no code is issued at all.
+  const stub = demoCodesAllowed();
+  if (!stub && !smsEnabled()) {
+    log.error("otp_unavailable_no_sms_provider");
+    return fail(503, "Phone verification is unavailable right now. You can send the report without verifying.");
+  }
   const { code, challenge, expiresAt } = issueOtp(phone);
-  const stub = !smsEnabled();
   if (!stub) await sendSms(phone, `Your CivicResolve code is ${code}. It expires in ${OTP_TTL_MINUTES} minutes.`);
   log.info("otp_issued", { stub });
   return NextResponse.json(

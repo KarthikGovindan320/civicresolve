@@ -86,25 +86,35 @@ export function sniffImageType(base64: string): "image/jpeg" | "image/png" | "im
   return null;
 }
 
-/** Whether a MIME type is one of the recording formats we forward to Gemini. */
-export function isAllowedAudio(mime: string): boolean {
-  return /^audio\/(webm|ogg|mp4|mpeg|mp3|wav|x-wav|aac|m4a|x-m4a|flac)$/.test(mime.split(";")[0]);
-}
+/** Recording formats forwarded to Gemini, each recognised by its first bytes. */
+const AUDIO_SIGNATURES: { mimeType: string; matches: (header: Buffer) => boolean }[] = [
+  // WebM / Matroska (Chrome, Firefox)
+  { mimeType: "audio/webm", matches: (h) => h.readUInt32BE(0) === 0x1a45dfa3 },
+  // Ogg / Opus
+  { mimeType: "audio/ogg", matches: (h) => h.toString("ascii", 0, 4) === "OggS" },
+  // MP4 / M4A (Safari, Android)
+  { mimeType: "audio/mp4", matches: (h) => h.toString("ascii", 4, 8) === "ftyp" },
+  {
+    mimeType: "audio/wav",
+    matches: (h) => h.toString("ascii", 0, 4) === "RIFF" && h.toString("ascii", 8, 12) === "WAVE",
+  },
+  { mimeType: "audio/flac", matches: (h) => h.toString("ascii", 0, 4) === "fLaC" },
+  // ADTS AAC: frame sync with layer bits 00
+  { mimeType: "audio/aac", matches: (h) => h[0] === 0xff && (h[1] & 0xf6) === 0xf0 },
+  // MP3: an ID3 tag, or a bare MPEG audio frame sync
+  {
+    mimeType: "audio/mpeg",
+    matches: (h) => h.toString("ascii", 0, 3) === "ID3" || (h[0] === 0xff && (h[1] & 0xe0) === 0xe0),
+  },
+];
 
 /**
- * Like images, audio is checked by its first bytes and not only by the browser's
- * claim, so a renamed file of another type is never forwarded to Gemini.
+ * Like images, audio is identified by its first bytes and never by the browser's
+ * claim, so a renamed file of another type is never forwarded to Gemini, and the
+ * type stored with the recording is the one its contents prove.
  */
-export function looksLikeAudio(base64: string): boolean {
+export function sniffAudioType(base64: string): string | null {
   const header = signatureBytes(base64);
-  const ascii = (start: number, end: number) => header.toString("ascii", start, end);
-  return (
-    (header[0] === 0x1a && header[1] === 0x45 && header[2] === 0xdf && header[3] === 0xa3) || // WebM / Matroska (Chrome, Firefox)
-    ascii(0, 4) === "OggS" || // Ogg / Opus
-    ascii(4, 8) === "ftyp" || // MP4 / M4A / AAC in MP4 (Safari)
-    (ascii(0, 4) === "RIFF" && ascii(8, 12) === "WAVE") || // WAV
-    ascii(0, 3) === "ID3" ||
-    (header[0] === 0xff && (header[1] & 0xe0) === 0xe0) || // MP3 / ADTS AAC
-    ascii(0, 4) === "fLaC" // FLAC
-  );
+  if (header.length < 12) return null;
+  return AUDIO_SIGNATURES.find((signature) => signature.matches(header))?.mimeType ?? null;
 }

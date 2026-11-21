@@ -1,6 +1,6 @@
 import type { MediaPart } from "./gemini";
 import { failure, type Result } from "./result";
-import { isAllowedAudio, looksLikeAudio, sniffImageType } from "./security";
+import { sniffAudioType, sniffImageType } from "./security";
 import { LIMITS } from "./types";
 
 // One place for upload handling, shared by every route that accepts files (new
@@ -43,14 +43,17 @@ export async function readImage(entry: FormDataEntryValue | null): Promise<Uploa
   return { ok: true, part: { ...file, mimeType: sniffedType } };
 }
 
-/** Read an optional voice note. Only an allow-list of recording formats is forwarded to Gemini. */
+/**
+ * Read an optional voice note. Only an allow-list of recording formats is
+ * forwarded to Gemini, typed by their file signature like images are.
+ */
 export async function readAudio(entry: FormDataEntryValue | null): Promise<UploadResult> {
   const file = await readFile(entry, MAX_AUDIO);
   if (file === "too-big") return failure(413, "Voice note is too long.");
   if (!file) return { ok: true, part: null };
-  if (!isAllowedAudio(file.mimeType) || !looksLikeAudio(file.data))
-    return failure(400, "Voice note must be an audio recording.");
-  return { ok: true, part: file };
+  const sniffedType = sniffAudioType(file.data);
+  if (!sniffedType) return failure(400, "Voice note must be an audio recording.");
+  return { ok: true, part: { ...file, mimeType: sniffedType } };
 }
 
 /**

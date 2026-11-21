@@ -15,13 +15,15 @@
 // can forge a challenge for a code they didn't receive. This works across any number of
 // Cloud Run instances with zero database reads or writes.
 //
-// SMS stub: no SMS gateway is connected yet, so in stub mode /api/otp also returns the
-// code and the form shows it as "use this code". Connecting a real SMS provider means
-// implementing sendSms() below and setting SMS_PROVIDER. Nothing else changes, and the
-// code is then never sent to the browser.
+// SMS stub: no SMS gateway is connected yet, so in demo mode /api/otp also returns the
+// code and the form shows it as "use this code" (see demoCodesAllowed: in production
+// this needs OTP_DEMO_CODES=true). Connecting a real SMS provider means implementing
+// sendSms() below and setting SMS_PROVIDER. Nothing else changes, and the code is then
+// never sent to the browser.
 // =============================================================================
 import "server-only";
 import { createHmac, randomInt } from "crypto";
+import { signingSecret } from "./secrets";
 import { safeEqual } from "./security";
 
 /** How long a one-time code stays valid. */
@@ -37,13 +39,16 @@ const INDIAN_MOBILE_PATTERN = /^[6-9]\d{9}$/;
 /** Whether a real SMS gateway is configured; until then the API runs in stub mode. */
 export const smsEnabled = () => Boolean(process.env.SMS_PROVIDER);
 
-function otpSecret(): string {
-  return (
-    process.env.OTP_SECRET ||
-    process.env.LINK_SECRET ||
-    `civicresolve-otp:${process.env.ADMIN_PASSCODE || "dev-only-secret"}`
-  );
-}
+/**
+ * Whether /api/otp may return the code itself (the on-screen "demo" code). Only
+ * without an SMS gateway, and in production only when explicitly switched on with
+ * OTP_DEMO_CODES=true: a deployment that forgot to configure SMS fails closed
+ * instead of handing out codes for any number typed in.
+ */
+export const demoCodesAllowed = () =>
+  !smsEnabled() && (process.env.NODE_ENV !== "production" || process.env.OTP_DEMO_CODES === "true");
+
+const otpSecret = () => signingSecret("OTP_SECRET", "LINK_SECRET");
 
 /**
  * Normalise an Indian mobile number to E.164 ("+91XXXXXXXXXX"), or null if it isn't
@@ -59,7 +64,8 @@ export function normalizePhone(raw: string): string | null {
 }
 
 const sign = (phone: string, code: string, expiresAt: number) =>
-  createHmac("sha256", otpSecret()).update(`${phone}|${code}|${expiresAt}`).digest("base64url");
+  // The "otp|" prefix keeps these signatures distinct from link tokens when both share LINK_SECRET.
+  createHmac("sha256", otpSecret()).update(`otp|${phone}|${code}|${expiresAt}`).digest("base64url");
 
 /** Create a fresh 6-digit code for this phone, plus the signed challenge the client must send back. */
 export function issueOtp(phone: string, now = Date.now()): { code: string; challenge: string; expiresAt: number } {
@@ -78,9 +84,14 @@ export function verifyOtp(phone: string, code: string, challenge: string, now = 
   return safeEqual(sign(phone, code, expiresAt), signature);
 }
 
-/** Integration point for a real SMS gateway (e.g. via SMS_PROVIDER). Not connected yet: stub mode. */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export async function sendSms(_phone: string, _text: string): Promise<void> {
-  // Intentionally empty until an SMS provider is chosen. While smsEnabled() is false the code
-  // is returned to the browser instead (clearly labelled as a demo stub in the UI).
-}
+/** Sends one text message. */
+export type SmsSender = (phone: string, text: string) => Promise<void>;
+
+/**
+ * Integration point for a real SMS gateway (selected with SMS_PROVIDER). None is
+ * connected yet, so this refuses loudly instead of pretending a code was sent;
+ * /api/otp only calls it when SMS_PROVIDER is set.
+ */
+export const sendSms: SmsSender = async () => {
+  throw new Error(`SMS provider "${process.env.SMS_PROVIDER}" is not implemented yet.`);
+};
