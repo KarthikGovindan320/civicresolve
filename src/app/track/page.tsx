@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import Map from "@/components/Map";
 import Stats from "@/components/Stats";
-import { PriorityBadge, StatusBadge, fmtDate } from "@/components/badges";
+import { PRIORITY_COLOR, PriorityBadge, StatusBadge, fmtDate } from "@/components/badges";
+import { PRIORITIES } from "@/lib/types";
 import { CATEGORIES, STATUSES, type PublicTicket as Ticket } from "@/lib/types";
 
 // =============================================================================
@@ -88,17 +89,33 @@ export default function TrackPage() {
             <span className="text-sm text-slate-500">{shown.length} shown</span>
           </div>
           <Map tickets={shown} height={360} />
+          {/* [ACCESSIBILITY] Legend: pin colour = priority (grey = resolved), also stated in each pin's popup text. */}
+          <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-700" aria-label="Map legend">
+            {[...PRIORITIES].reverse().map((p) => (
+              <li key={p} className="flex items-center gap-1.5">
+                <span className="inline-block h-3 w-3 rounded-full ring-1 ring-white" style={{ background: PRIORITY_COLOR[p] }} aria-hidden />
+                {p}
+              </li>
+            ))}
+            <li className="flex items-center gap-1.5">
+              <span className="inline-block h-3 w-3 rounded-full" style={{ background: "#64748b" }} aria-hidden />
+              Resolved
+            </li>
+          </ul>
           <ul className="divide-y divide-slate-200 rounded-lg bg-white ring-1 ring-slate-200">
             {shown.map((t) => (
               <li key={t.id}>
                 <Link href={`/track/${t.id}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 hover:bg-slate-50">
-                  <span className="font-mono text-xs text-slate-500">{t.id}</span>
+                  <span className="font-mono text-xs text-slate-600">{t.id}</span>
                   <span className="min-w-[12rem] flex-1 font-medium">{t.title}</span>
-                  {t.reporterCount > 1 && <span className="text-xs text-slate-600">{t.reporterCount} reporters</span>}
-                  <PriorityBadge p={t.priority} />
-                  <StatusBadge s={t.status} />
-                  {t.overdue && <span className="rounded-full bg-red-700 px-2 py-0.5 text-xs font-semibold text-white">Overdue</span>}
-                  <span className="w-full text-xs text-slate-500">
+                  {/* Badges stay together as one group when the row wraps on a phone. */}
+                  <span className="flex shrink-0 flex-wrap items-center gap-2">
+                    {t.reporterCount > 1 && <span className="text-xs text-slate-600">{t.reporterCount} reporters</span>}
+                    <PriorityBadge p={t.priority} />
+                    <StatusBadge s={t.status} />
+                    {t.overdue && <span className="rounded-full bg-red-700 px-2 py-0.5 text-xs font-semibold text-white">Overdue</span>}
+                  </span>
+                  <span className="w-full text-xs text-slate-600">
                     {t.category} · {t.department} · {t.location.address || "Pinned location"} · {fmtDate(t.createdAt)}
                   </span>
                 </Link>

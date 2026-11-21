@@ -150,7 +150,7 @@ export default function AddressSearch({ provider, onSelect }: { provider: "googl
           onKeyDown={onKeyDown}
           onBlur={() => setTimeout(() => setOpen(false), 150)}
           onFocus={() => items.length && setOpen(true)}
-          placeholder="Search an address or landmark, e.g. Katpadi bus stand"
+          placeholder="Street or landmark, e.g. Katpadi bus stand"
           maxLength={120}
           className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none"
         />

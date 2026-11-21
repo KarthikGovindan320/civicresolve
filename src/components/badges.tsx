@@ -39,4 +39,6 @@ export const langName = (code: string) => LANG[code] ?? code.toUpperCase();
 // Times are stored in UTC (ISO) and always displayed in Indian Standard Time,
 // whatever timezone the Cloud Run server runs in.
 export const fmtDate = (iso: string) =>
-  new Date(iso).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata" });
+  new Date(iso)
+    .toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata" })
+    .replace(/\s(am|pm)$/i, "\u00a0$1"); // keep "11:51 am" on one line

@@ -61,19 +61,19 @@ export default function Stats({ tickets }: { tickets: PublicTicket[] }) {
           <tbody>
             {depts.map((x) => (
               <tr key={x.d}>
-                <th scope="row" className="w-48 py-1 pr-2 text-left font-normal">{x.d}</th>
+                <th scope="row" className="py-1 pr-2 text-left font-normal sm:w-48">{x.d}</th>
                 <td className="py-1">
                   <span className="flex items-center gap-2">
-                    <span className="h-2 flex-1 rounded bg-slate-100" aria-hidden>
+                    <span className="h-2 min-w-8 flex-1 rounded bg-slate-100" aria-hidden>
                       <span className="block h-2 rounded bg-emerald-600" style={{ width: `${(x.open / max) * 100}%` }} />
                     </span>
-                    <span className="w-14 tabular-nums">{x.open} open</span>
+                    <span className="w-14 whitespace-nowrap tabular-nums">{x.open} open</span>
                   </span>
                 </td>
-                <td className={`w-20 py-1 text-right tabular-nums ${x.overdue ? "font-semibold text-red-700" : "text-slate-600"}`}>
+                <td className={`whitespace-nowrap py-1 pl-2 text-right tabular-nums ${x.overdue ? "font-semibold text-red-700" : "text-slate-600"}`}>
                   {x.overdue} overdue
                 </td>
-                <td className="w-20 py-1 text-right tabular-nums text-slate-700">{x.onTime === null ? "–" : `${x.onTime}% on time`}</td>
+                <td className="whitespace-nowrap py-1 pl-2 text-right tabular-nums text-slate-700">{x.onTime === null ? "–" : `${x.onTime}% on time`}</td>
               </tr>
             ))}
           </tbody>

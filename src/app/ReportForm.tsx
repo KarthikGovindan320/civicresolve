@@ -165,7 +165,7 @@ export default function ReportForm({ searchProvider = "osm" }: { searchProvider?
             <label htmlFor="image" className="mb-1 block text-sm font-medium">Photo (optional)</label>
             <input id="image" type="file" accept="image/*" capture="environment"
               onChange={(e) => onImage(e.target.files?.[0])}
-              className="block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm" />
+              className="block w-full rounded-md border border-dashed border-slate-300 bg-white p-1.5 text-sm text-slate-700 file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-slate-900 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white hover:file:bg-slate-700" />
           </div>
         </div>
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -197,7 +197,8 @@ export default function ReportForm({ searchProvider = "osm" }: { searchProvider?
             <Map picked={picked} onPick={setPicked} height={320} />
           </div>
           <p id="map-help" className="mt-1 text-xs text-slate-600">
-            Keyboard: focus the map, move with the arrow keys, press Enter to pin the centre (+).
+            <span className="sm:hidden">Tap the map to drop the pin, or use your location.</span>
+            <span className="max-sm:sr-only">Keyboard: focus the map, move with the arrow keys, press Enter to pin the centre (+).</span>
           </p>
           <p className="text-xs text-slate-600" aria-live="polite">
             {picked ? `Pinned at ${picked.lat.toFixed(5)}, ${picked.lng.toFixed(5)}` : "No location picked yet."}
