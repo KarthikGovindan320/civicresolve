@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import AddressSearch from "@/components/AddressSearch";
 import { useT } from "@/components/I18nProvider";
 import LabelledField from "@/components/LabelledField";
 import Map from "@/components/Map";
+import Photo from "@/components/Photo";
 import PhoneVerify from "@/components/PhoneVerify";
 import VoiceRecorder from "@/components/VoiceRecorder";
 import ResultCard from "@/components/report/ResultCard";
@@ -43,6 +44,17 @@ export default function ReportForm({ searchProvider = "osm" }: { searchProvider?
     blob: null,
     previewUrl: null,
   });
+  // Object URLs hold the image in memory until revoked; release the last one when the form goes away.
+  const previewUrlRef = useRef<string | null>(null);
+  useEffect(() => {
+    previewUrlRef.current = photo.previewUrl;
+  }, [photo.previewUrl]);
+  useEffect(
+    () => () => {
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    },
+    [],
+  );
   const [audio, setAudio] = useState<Blob | null>(null);
   const [locating, setLocating] = useState(false);
   // How many samples have been filled in, and the announcement for the latest one.
@@ -92,14 +104,19 @@ export default function ReportForm({ searchProvider = "osm" }: { searchProvider?
   }
 
   async function choosePhoto(file: File | undefined) {
-    if (photo.previewUrl) URL.revokeObjectURL(photo.previewUrl);
-    if (!file) return setPhoto({ blob: null, previewUrl: null });
+    if (!file) return replacePhoto(null);
     try {
-      const downscaled = await downscale(file);
-      setPhoto({ blob: downscaled, previewUrl: URL.createObjectURL(downscaled) });
+      replacePhoto(await downscale(file));
     } catch {
+      // The previous photo and its preview stay as they were.
       submission.showError(t("report.error.imageUnreadable"));
     }
+  }
+
+  /** Swaps in the new photo (or clears it) and only then releases the old preview. */
+  function replacePhoto(blob: Blob | null) {
+    if (photo.previewUrl) URL.revokeObjectURL(photo.previewUrl);
+    setPhoto({ blob, previewUrl: blob ? URL.createObjectURL(blob) : null });
   }
 
   if (submission.result)
@@ -181,15 +198,7 @@ export default function ReportForm({ searchProvider = "osm" }: { searchProvider?
               />
             </LabelledField>
           </div>
-          {photo.previewUrl && (
-            // A local object URL preview; next/image optimisation does not apply.
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={photo.previewUrl}
-              alt={t("report.photoPreviewAlt")}
-              className="max-h-48 rounded-md ring-1 ring-slate-200"
-            />
-          )}
+          {photo.previewUrl && <Photo src={photo.previewUrl} alt={t("report.photoPreviewAlt")} className="max-h-48" />}
         </div>
 
         <div className="space-y-4">

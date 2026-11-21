@@ -68,14 +68,24 @@ export default function AddressSearch({
   const [status, setStatus] = useState<{ text: string; problem: boolean }>({ text: "", problem: false });
   const announce = (text: string) => setStatus({ text, problem: false });
   const reportProblem = (text: string) => setStatus({ text, problem: true });
-  const sessionToken = useRef(newSessionToken()); // one Google billing session per search
+  const [firstSessionToken] = useState(newSessionToken); // generated once, not on every render
+  const sessionToken = useRef(firstSessionToken); // one Google billing session per search
   // Counts requests so that only the latest one may update the list.
   const latestRequest = useRef(0);
   // Set when choose() fills the box with the picked place, so that text change doesn't trigger a new search.
   const skipNextSearch = useRef(false);
+  const blurTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const listId = useId();
   const typeahead = provider === "google";
   const searchableQuery = query.trim().length >= MIN_QUERY_LENGTH ? query.trim() : null;
+
+  function clearSuggestions() {
+    setSuggestions([]);
+    setActiveIndex(-1);
+    setOpen(false);
+    setLoading(false);
+    setStatus({ text: "", problem: false });
+  }
 
   async function search(text: string) {
     const requestNumber = ++latestRequest.current;
@@ -94,7 +104,7 @@ export default function AddressSearch({
       const found = result.data.suggestions;
       setSuggestions(found);
       setActiveIndex(found.length ? 0 : -1);
-      setOpen(true);
+      setOpen(found.length > 0);
       if (found.length) announce(t("search.results", { count: found.length }));
       else reportProblem(t("search.noMatches"));
     } catch {
@@ -106,6 +116,10 @@ export default function AddressSearch({
 
   // The debounced search should rerun when the query changes, not when the interface language does.
   const searchLatest = useEffectEvent(search);
+  const clearLatest = useEffectEvent(clearSuggestions);
+
+  // A pending blur-close must not fire after the component is gone.
+  useEffect(() => () => clearTimeout(blurTimer.current), []);
 
   // Google: suggestions while typing (debounced). OpenStreetMap: only on Enter (its usage policy).
   useEffect(() => {
@@ -116,11 +130,18 @@ export default function AddressSearch({
     }
     if (query.trim().length < MIN_QUERY_LENGTH) {
       latestRequest.current++; // drop any search still in flight
+      // Too short to search: nothing stale may stay selectable. Deferred so state isn't set synchronously in the effect.
+      queueMicrotask(clearLatest);
       return;
     }
     const debounce = setTimeout(() => searchLatest(query.trim()), DEBOUNCE_MS);
     return () => clearTimeout(debounce);
   }, [query, typeahead]);
+
+  // Each completed choice ends a billing session, whichever way the coordinates were obtained.
+  const rotateSession = () => {
+    sessionToken.current = newSessionToken();
+  };
 
   async function choose(suggestion: Suggestion) {
     setOpen(false);
@@ -130,6 +151,7 @@ export default function AddressSearch({
     if (suggestion.lat !== undefined && suggestion.lng !== undefined) {
       onSelect({ lat: suggestion.lat, lng: suggestion.lng, address: fullName(suggestion) });
       announce(t("search.pinned", { place: suggestion.main }));
+      rotateSession();
       return;
     }
     setLoading(true);
@@ -150,7 +172,7 @@ export default function AddressSearch({
       reportProblem(t("search.notFound"));
     } finally {
       setLoading(false);
-      sessionToken.current = newSessionToken(); // the details call ends this billing session
+      rotateSession(); // the details call ends this billing session
     }
   }
 
@@ -193,8 +215,15 @@ export default function AddressSearch({
             if (!typeahead) setOpen(false);
           }}
           onKeyDown={onKeyDown}
-          onBlur={() => setTimeout(() => setOpen(false), BLUR_CLOSE_DELAY_MS)}
-          onFocus={() => suggestions.length && setOpen(true)}
+          aria-busy={loading}
+          onBlur={() => {
+            clearTimeout(blurTimer.current);
+            blurTimer.current = setTimeout(() => setOpen(false), BLUR_CLOSE_DELAY_MS);
+          }}
+          onFocus={() => {
+            clearTimeout(blurTimer.current);
+            if (suggestions.length) setOpen(true);
+          }}
           placeholder={t("search.placeholder")}
           maxLength={LIMITS.search}
           className={fieldClass}
@@ -248,10 +277,14 @@ export default function AddressSearch({
         </ul>
       )}
       <p className="sr-only" aria-live="polite">
-        {status.text}
+        {status.problem ? "" : status.text}
       </p>
       {/* Only problems are shown visibly; routine updates go to the live region above. */}
-      {status.problem && !open && <p className="mt-1 text-xs text-amber-800">{status.text}</p>}
+      {status.problem && (
+        <p role="alert" className="mt-1 text-xs text-amber-800">
+          {status.text}
+        </p>
+      )}
     </div>
   );
 }

@@ -9,6 +9,16 @@ import { fieldClass } from "./ui";
 
 const REMEMBERED_PHONE_STORAGE = "civicresolve.phone";
 const OTP_PATTERN = /^\d{6}$/;
+const FOCUSABLE =
+  "input:not([disabled]), button:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled])";
+
+function readRememberedPhone(): string {
+  try {
+    return localStorage.getItem(REMEMBERED_PHONE_STORAGE) ?? "";
+  } catch {
+    return "";
+  }
+}
 
 /** The server's answer to a code request. `devCode` is present only while no SMS gateway is configured. */
 interface OtpChallenge {
@@ -47,7 +57,8 @@ interface Props {
  */
 export default function PhoneVerify({ onVerified, onCancel, busy }: Props) {
   const t = useT();
-  const [phone, setPhone] = useState("");
+  // This dialog only mounts after a click, in the browser, so storage can be read while initialising.
+  const [phone, setPhone] = useState(readRememberedPhone);
   const [remember, setRemember] = useState(true);
   const [sent, setSent] = useState<OtpChallenge | null>(null);
   const [otp, setOtp] = useState("");
@@ -56,17 +67,13 @@ export default function PhoneVerify({ onVerified, onCancel, busy }: Props) {
 
   const phoneRef = useRef<HTMLInputElement>(null);
   const otpRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLFormElement>(null);
 
-  // Pre-fill a remembered number, and move focus into the dialog.
+  // Move focus into the dialog on open, and give it back to whatever opened it on close.
   useEffect(() => {
-    let rememberedPhone: string | null = null;
-    try {
-      rememberedPhone = localStorage.getItem(REMEMBERED_PHONE_STORAGE);
-    } catch {}
-    // Reading browser storage once on open; it can't be read during server rendering.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (rememberedPhone) setPhone(rememberedPhone);
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     phoneRef.current?.focus();
+    return () => opener?.focus();
   }, []);
 
   useEffect(() => {
@@ -76,6 +83,22 @@ export default function PhoneVerify({ onVerified, onCancel, busy }: Props) {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [busy, onCancel]);
+
+  /** Keeps Tab and Shift+Tab inside the dialog, wrapping at either end. */
+  function trapFocus(event: React.KeyboardEvent<HTMLFormElement>) {
+    if (event.key !== "Tab") return;
+    const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE);
+    if (!focusable?.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   async function sendCode() {
     setError(null);
@@ -120,11 +143,13 @@ export default function PhoneVerify({ onVerified, onCancel, busy }: Props) {
   return createPortal(
     <div className="fixed inset-0 z-[5000] flex items-end justify-center bg-slate-900/50 p-4 sm:items-center">
       <form
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="verify-title"
         aria-describedby="verify-why"
         onSubmit={verify}
+        onKeyDown={trapFocus}
         noValidate
         className="max-h-full w-full max-w-md space-y-4 overflow-y-auto rounded-xl bg-white p-5 shadow-xl ring-1 ring-slate-300"
       >

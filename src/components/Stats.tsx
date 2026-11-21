@@ -6,21 +6,23 @@ import { useT } from "./I18nProvider";
 const MS_PER_HOUR = 36e5;
 
 const isOpen = (ticket: PublicTicket) => ticket.status !== "Resolved";
-const isResolved = (ticket: PublicTicket) => ticket.status === "Resolved" && Boolean(ticket.resolvedAt);
+type ResolvedTicket = PublicTicket & { resolvedAt: string };
+const isResolved = (ticket: PublicTicket): ticket is ResolvedTicket =>
+  ticket.status === "Resolved" && Boolean(ticket.resolvedAt);
 
 /** Percentage of resolved tickets that were fixed by their target date, or null when none are resolved yet. */
 function onTimePercent(tickets: PublicTicket[]): number | null {
   const resolved = tickets.filter(isResolved);
   if (!resolved.length) return null;
-  const onTime = resolved.filter((ticket) => ticket.resolvedAt! <= ticket.slaDueAt).length;
+  const onTime = resolved.filter((ticket) => ticket.resolvedAt <= ticket.slaDueAt).length;
   return Math.round((100 * onTime) / resolved.length);
 }
 
 /** Mean hours from report to resolution; 0 when nothing is resolved yet. */
-function averageHoursToFix(resolved: PublicTicket[]): number {
+function averageHoursToFix(resolved: ResolvedTicket[]): number {
   if (!resolved.length) return 0;
   const totalMs = resolved.reduce(
-    (sum, ticket) => sum + (Date.parse(ticket.resolvedAt!) - Date.parse(ticket.createdAt)),
+    (sum, ticket) => sum + (Date.parse(ticket.resolvedAt) - Date.parse(ticket.createdAt)),
     0,
   );
   return totalMs / resolved.length / MS_PER_HOUR;

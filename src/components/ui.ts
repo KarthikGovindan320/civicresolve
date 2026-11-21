@@ -15,3 +15,6 @@ export const compactButtonClass = "rounded-md px-3 py-1.5 text-sm font-medium di
 
 /** Label that sits on its own line above a field. */
 export const fieldLabelClass = "mb-1 block text-sm font-medium";
+
+/** Map height in pixels when the page does not ask for one; shared by the map and its loading skeleton. */
+export const DEFAULT_MAP_HEIGHT = 380;

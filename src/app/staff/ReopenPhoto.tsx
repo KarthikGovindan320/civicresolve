@@ -1,3 +1,4 @@
+import Photo from "@/components/Photo";
 import type { StaffTicket } from "./types";
 
 /**
@@ -9,11 +10,10 @@ export default function ReopenPhoto({ ticket }: { ticket: StaffTicket }) {
   if (!ticket.hasReopenPhoto || ticket.citizenConfirmation !== "reopened") return null;
   return (
     <figure>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
+      <Photo
         src={`/api/tickets/${ticket.id}/image?v=reopen&t=${encodeURIComponent(ticket.updatedAt)}`}
         alt={`New photo from the citizen after reopening ${ticket.id}`}
-        className="max-h-48 rounded-md ring-1 ring-slate-200"
+        className="max-h-48"
       />
       <figcaption className="text-xs text-slate-600">Citizen&apos;s new photo (issue reopened)</figcaption>
     </figure>

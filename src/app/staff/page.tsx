@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { FixedLanguage } from "@/components/I18nProvider";
 import { staffRequest } from "@/lib/client/api";
 import Dashboard from "./Dashboard";
@@ -8,6 +8,17 @@ import Login from "./Login";
 import type { Session } from "./types";
 
 const STAFF_KEY_STORAGE = "civic-staff-key";
+
+/** The saved passcode never changes behind our back within a tab, so there is nothing to subscribe to. */
+const subscribeToNothing = () => () => {};
+
+function readSavedKey(): string | null {
+  try {
+    return sessionStorage.getItem(STAFF_KEY_STORAGE);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Staff portal: one sign-in for two roles. The passcode decides who you are:
@@ -41,15 +52,13 @@ export default function StaffPage() {
   }
 
   // Restore a sign-in from earlier in this tab.
+  const savedKey = useSyncExternalStore(subscribeToNothing, readSavedKey, () => null);
+  const restoreAttempted = useRef(false); // only the first stored key is restored; later changes come from signIn itself
   useEffect(() => {
-    let savedKey: string | null = null;
-    try {
-      savedKey = sessionStorage.getItem(STAFF_KEY_STORAGE);
-    } catch {}
-    // signIn sets state only after an async fetch, not synchronously.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (savedKey) signIn(savedKey);
-  }, [signIn]);
+    if (restoreAttempted.current || !savedKey) return;
+    restoreAttempted.current = true;
+    signIn(savedKey);
+  }, [savedKey, signIn]);
 
   // Staff screens stay in English whatever language the citizen pages use.
   return (

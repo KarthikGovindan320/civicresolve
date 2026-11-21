@@ -1,3 +1,4 @@
+import Photo from "@/components/Photo";
 import { formatDateTime } from "@/lib/client/format";
 import type { Translate } from "@/lib/i18n";
 import type { PublicTicket, Resolution } from "@/lib/types";
@@ -42,22 +43,20 @@ export default function ProofOfFix({
       <div className="grid gap-3 sm:grid-cols-2">
         {ticket.hasImage && (
           <figure>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
+            <Photo
               src={photoUrl(ticket, "before")}
               alt={t("ticket.beforeAlt", { title: ticket.title })}
-              className="max-h-60 rounded-md ring-1 ring-slate-200"
+              className="max-h-60"
             />
             <figcaption className="text-xs text-slate-600">{t("ticket.beforeCaption")}</figcaption>
           </figure>
         )}
         {resolution.hasPhoto && (
           <figure>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
+            <Photo
               src={photoUrl(ticket, "after", resolution.at)}
               alt={t("ticket.afterAlt", { title: ticket.title })}
-              className="max-h-60 rounded-md ring-1 ring-slate-200"
+              className="max-h-60"
             />
             <figcaption className="text-xs text-slate-600">
               {t("ticket.afterCaption", { by: resolution.by })}

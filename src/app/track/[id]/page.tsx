@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import Map from "@/components/Map";
+import Photo from "@/components/Photo";
 import { getTranslator } from "@/lib/i18n/server";
 import { store } from "@/lib/store";
 import { isHeld } from "@/lib/types";
@@ -69,7 +70,7 @@ export default async function TicketPage({ params, searchParams }: PageProps<"/t
 
       <AccountabilityStrip ticket={ticket} t={t} />
 
-      {isOwner && <CitizenPanel ticket={toPrivate(storedTicket)} token={token!} />}
+      {isOwner && token && <CitizenPanel ticket={toPrivate(storedTicket)} token={token} />}
 
       {resolution && <ProofOfFix ticket={ticket} resolution={resolution} t={t} />}
 
@@ -77,11 +78,10 @@ export default async function TicketPage({ params, searchParams }: PageProps<"/t
         <section className="space-y-4 rounded-lg bg-white p-5 ring-1 ring-slate-200">
           <FactsTable ticket={ticket} t={t} />
           {ticket.hasImage && !resolution && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
+            <Photo
               src={photoUrl(ticket, "before")}
               alt={t("ticket.photoAlt", { title: ticket.title })}
-              className="max-h-72 rounded-md ring-1 ring-slate-200"
+              className="max-h-72"
             />
           )}
         </section>

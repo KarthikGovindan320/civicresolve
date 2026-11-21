@@ -6,6 +6,7 @@ import { CircleMarker, MapContainer, Popup, TileLayer, useMap, useMapEvents } fr
 import type { PublicTicket } from "@/lib/types";
 import { useT } from "./I18nProvider";
 import { PRIORITY_COLOR, RESOLVED_COLOR } from "./badges";
+import { DEFAULT_MAP_HEIGHT } from "./ui";
 
 interface Coordinates {
   lat: number;
@@ -41,7 +42,7 @@ function PickHandler({ onPick }: { onPick: MapViewProps["onPick"] }) {
   const map = useMapEvents({
     click: (event) => onPick?.({ lat: event.latlng.lat, lng: event.latlng.lng }),
     keydown: (event) => {
-      const { key } = event.originalEvent as KeyboardEvent;
+      const { key } = event.originalEvent;
       if (key === "Enter" || key === " ") {
         event.originalEvent.preventDefault();
         const mapCentre = map.getCenter();
@@ -70,7 +71,14 @@ function Recenter({ target }: { target?: Coordinates | null }) {
  *     resolved, and larger when more citizens reported it, so the most urgent
  *     and most-reported problems stand out at a glance.
  */
-export default function MapView({ tickets = [], picked, onPick, height = 380, center, zoom = 13 }: MapViewProps) {
+export default function MapView({
+  tickets = [],
+  picked,
+  onPick,
+  height = DEFAULT_MAP_HEIGHT,
+  center,
+  zoom = 13,
+}: MapViewProps) {
   const t = useT();
   const initialCentre = center ?? picked ?? VELLORE;
   return (

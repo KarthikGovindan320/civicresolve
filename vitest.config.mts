@@ -1,5 +1,6 @@
-// Vitest configuration. Tests run in Node against the real modules
-// (no mocking of our own code); "server-only" is replaced by an empty module
+// Vitest configuration. Server tests (*.test.ts) run in Node against the real modules; component
+// tests (*.test.tsx) opt in to jsdom with a `@vitest-environment jsdom` docblock and use
+// Testing Library. Our own code is not mocked; "server-only" is replaced by an empty module
 // because it is a Next.js build-time guard, not runtime logic.
 import path from "path";
 import { defineConfig } from "vitest/config";
@@ -7,7 +8,8 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.{ts,tsx}"],
+    setupFiles: ["tests/setup.ts"],
     env: { LOG_SILENT: "1" },
     // Coverage is measured on the server code (domain logic, services, API routes). Browser-only
     // helpers in src/lib/client are exercised through the UI instead. The thresholds sit just
@@ -17,7 +19,7 @@ export default defineConfig({
       include: ["src/lib/**", "src/app/api/**"],
       exclude: ["src/lib/client/**"],
       reporter: ["text-summary", "text"],
-      thresholds: { statements: 80, branches: 74, functions: 82, lines: 83 },
+      thresholds: { statements: 85, branches: 79, functions: 88, lines: 89 },
     },
   },
   resolve: {

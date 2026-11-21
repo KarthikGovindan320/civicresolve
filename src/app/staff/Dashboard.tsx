@@ -54,7 +54,7 @@ export default function Dashboard({
 
   // Swap in the server's response, so the UI always shows server-validated data.
   function handleUpdated(updated: StaffTicket, message: string) {
-    setTickets((current) => current!.map((ticket) => (ticket.id === updated.id ? updated : ticket)));
+    setTickets((current) => (current ?? []).map((ticket) => (ticket.id === updated.id ? updated : ticket)));
     setConfirmation(message);
   }
 
