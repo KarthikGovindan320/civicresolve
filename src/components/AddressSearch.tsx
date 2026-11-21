@@ -1,18 +1,10 @@
 "use client";
 
-// =============================================================================
-// [GOOGLE SERVICES][ACCESSIBILITY] "Search an address or landmark" box above the report map
-// -----------------------------------------------------------------------------
-// Type "Katpadi bus stand" → Google Places suggestions → pick one → the map jumps there and
-// the pin is placed. Much faster than dragging the map across the city.
-// [ACCESSIBILITY] WAI-ARIA combobox pattern: role="combobox" with aria-expanded /
-// aria-controls / aria-activedescendant, a role="listbox" of role="option"s, ↑/↓ to move,
-// Enter to choose, Escape to close, and result counts announced through aria-live.
-// [EFFICIENCY] Keystrokes are debounced (300 ms, 3+ characters) and stale responses are
-// dropped, so fast typing doesn't trigger a request per letter or flash old results.
-// =============================================================================
-
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
+import { apiRequest } from "@/lib/client/api";
+import { LIMITS } from "@/lib/types";
+import { useT } from "./I18nProvider";
+import { fieldClass } from "./ui";
 
 export interface PickedPlace {
   lat: number;
@@ -22,168 +14,244 @@ export interface PickedPlace {
 
 interface Suggestion {
   id: string;
+  /** The place name, e.g. "Katpadi Bus Stand". */
   main: string;
+  /** The surrounding area, shown under the name. */
   secondary: string;
+  /** Present when the provider returns coordinates with the suggestion; otherwise fetched on selection. */
   lat?: number;
   lng?: number;
 }
 
+/** Shortest query worth sending to the search provider. */
+const MIN_QUERY_LENGTH = 3;
+/** Pause in typing before a type-ahead search is sent. */
+const DEBOUNCE_MS = 300;
+/** Delay before closing the list on blur, so a click on a suggestion still registers. */
+const BLUR_CLOSE_DELAY_MS = 150;
+
 // Google's session token: URL-safe, at most 36 characters. randomUUID() needs a secure context
 // (HTTPS or localhost); on plain-HTTP LAN testing, fall back to 32 random hex characters.
-const newSession = () =>
+const newSessionToken = () =>
   typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
-    : Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+    : Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
-export default function AddressSearch({ provider, onSelect }: { provider: "google" | "osm"; onSelect: (p: PickedPlace) => void }) {
-  const [q, setQ] = useState("");
-  const [items, setItems] = useState<Suggestion[]>([]);
+const fullName = (suggestion: Suggestion) =>
+  suggestion.secondary ? `${suggestion.main}, ${suggestion.secondary}` : suggestion.main;
+
+/**
+ * "Search an address or landmark" box above the report map. Typing "Katpadi
+ * bus stand" shows suggestions; picking one moves the map there and places
+ * the pin, which is much faster than dragging the map across the city.
+ *
+ * It follows the WAI-ARIA combobox pattern: a combobox input that controls a
+ * listbox of options, Up/Down to move, Enter to choose, Escape to close, and
+ * result counts announced through a live region. Keystrokes are debounced and
+ * stale responses are dropped, so fast typing doesn't send a request per
+ * letter or flash old results.
+ */
+export default function AddressSearch({
+  provider,
+  onSelect,
+}: {
+  provider: "google" | "osm";
+  onSelect: (place: PickedPlace) => void;
+}) {
+  const t = useT();
+  const [query, setQuery] = useState("");
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(-1);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState("");
-  const session = useRef(newSession()); // one Google billing session per search
-  const reqNo = useRef(0);
+  // What the search last reported; problems are also shown visibly, routine updates only announced.
+  const [status, setStatus] = useState<{ text: string; problem: boolean }>({ text: "", problem: false });
+  const announce = (text: string) => setStatus({ text, problem: false });
+  const reportProblem = (text: string) => setStatus({ text, problem: true });
+  const sessionToken = useRef(newSessionToken()); // one Google billing session per search
+  // Counts requests so that only the latest one may update the list.
+  const latestRequest = useRef(0);
   // Set when choose() fills the box with the picked place, so that text change doesn't trigger a new search.
-  const skipSearch = useRef(false);
+  const skipNextSearch = useRef(false);
   const listId = useId();
   const typeahead = provider === "google";
+  const searchableQuery = query.trim().length >= MIN_QUERY_LENGTH ? query.trim() : null;
 
   async function search(text: string) {
-    const n = ++reqNo.current;
+    const requestNumber = ++latestRequest.current;
+    const isLatest = () => requestNumber === latestRequest.current;
     setLoading(true);
     try {
-      const r = await fetch(`/api/places?q=${encodeURIComponent(text)}&session=${session.current}`);
-      const data = await r.json();
-      if (n !== reqNo.current) return; // a newer request has already been sent
-      if (!r.ok) {
-        setItems([]);
-        setStatus(data.error ?? "Search failed.");
+      const result = await apiRequest<{ suggestions: Suggestion[] }>(
+        `/api/places?q=${encodeURIComponent(text)}&session=${sessionToken.current}`,
+      );
+      if (!isLatest()) return; // a newer request has already been sent
+      if (!result.ok) {
+        setSuggestions([]);
+        reportProblem(result.error ?? t("search.failed"));
         return;
       }
-      setItems(data.suggestions);
-      setActive(data.suggestions.length ? 0 : -1);
+      const found = result.data.suggestions;
+      setSuggestions(found);
+      setActiveIndex(found.length ? 0 : -1);
       setOpen(true);
-      setStatus(data.suggestions.length ? `${data.suggestions.length} suggestions. Use the arrow keys to choose.` : "No matches. Try a nearby landmark.");
+      if (found.length) announce(t("search.results", { count: found.length }));
+      else reportProblem(t("search.noMatches"));
     } catch {
-      if (n === reqNo.current) setStatus("Search failed. Tap the map instead.");
+      if (isLatest()) reportProblem(t("search.failed"));
     } finally {
-      if (n === reqNo.current) setLoading(false);
+      if (isLatest()) setLoading(false);
     }
   }
+
+  // The debounced search should rerun when the query changes, not when the interface language does.
+  const searchLatest = useEffectEvent(search);
 
   // Google: suggestions while typing (debounced). OpenStreetMap: only on Enter (its usage policy).
   useEffect(() => {
     if (!typeahead) return;
-    if (skipSearch.current) {
-      skipSearch.current = false;
+    if (skipNextSearch.current) {
+      skipNextSearch.current = false;
       return;
     }
-    if (q.trim().length < 3) {
-      reqNo.current++;
+    if (query.trim().length < MIN_QUERY_LENGTH) {
+      latestRequest.current++; // drop any search still in flight
       return;
     }
-    const t = setTimeout(() => search(q.trim()), 300);
-    return () => clearTimeout(t);
-  }, [q, typeahead]);
+    const debounce = setTimeout(() => searchLatest(query.trim()), DEBOUNCE_MS);
+    return () => clearTimeout(debounce);
+  }, [query, typeahead]);
 
-  async function choose(s: Suggestion) {
+  async function choose(suggestion: Suggestion) {
     setOpen(false);
-    reqNo.current++; // drop any search still in flight
-    skipSearch.current = true;
-    setQ(s.secondary ? `${s.main}, ${s.secondary}` : s.main);
-    if (s.lat !== undefined && s.lng !== undefined) {
-      onSelect({ lat: s.lat, lng: s.lng, address: s.secondary ? `${s.main}, ${s.secondary}` : s.main });
-      setStatus(`Pinned ${s.main} on the map.`);
+    latestRequest.current++; // drop any search still in flight
+    skipNextSearch.current = true;
+    setQuery(fullName(suggestion));
+    if (suggestion.lat !== undefined && suggestion.lng !== undefined) {
+      onSelect({ lat: suggestion.lat, lng: suggestion.lng, address: fullName(suggestion) });
+      announce(t("search.pinned", { place: suggestion.main }));
       return;
     }
     setLoading(true);
     try {
-      const r = await fetch(`/api/places?id=${encodeURIComponent(s.id)}&session=${session.current}`);
-      const data = await r.json();
-      if (!r.ok) return setStatus(data.error ?? "Couldn't find that place. Tap the map instead.");
+      const result = await apiRequest<{ lat: number; lng: number; address?: string }>(
+        `/api/places?id=${encodeURIComponent(suggestion.id)}&session=${sessionToken.current}`,
+      );
+      if (!result.ok) return reportProblem(result.error ?? t("search.notFound"));
       // "Katpadi Bus Stand, Katpadi, Vellore…": keep the name the citizen picked in front of Google's address.
-      const addr: string = data.address ?? "";
-      onSelect({ lat: data.lat, lng: data.lng, address: addr.startsWith(s.main) ? addr : `${s.main}, ${addr}` });
-      setStatus(`Pinned ${s.main} on the map.`);
+      const address = result.data.address ?? "";
+      onSelect({
+        lat: result.data.lat,
+        lng: result.data.lng,
+        address: address.startsWith(suggestion.main) ? address : `${suggestion.main}, ${address}`,
+      });
+      announce(t("search.pinned", { place: suggestion.main }));
     } catch {
-      setStatus("Couldn't find that place. Tap the map instead.");
+      reportProblem(t("search.notFound"));
     } finally {
       setLoading(false);
-      session.current = newSession(); // the details call ends this billing session
+      sessionToken.current = newSessionToken(); // the details call ends this billing session
     }
   }
 
-  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "ArrowDown" && items.length) {
-      e.preventDefault();
+  function onKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "ArrowDown" && suggestions.length) {
+      event.preventDefault();
       setOpen(true);
-      setActive((a) => (a + 1) % items.length);
-    } else if (e.key === "ArrowUp" && items.length) {
-      e.preventDefault();
-      setActive((a) => (a <= 0 ? items.length - 1 : a - 1));
-    } else if (e.key === "Enter") {
-      e.preventDefault(); // never submit the whole report from the search box
-      if (open && active >= 0 && items[active]) choose(items[active]);
-      else if (q.trim().length >= 3) search(q.trim());
-    } else if (e.key === "Escape") {
+      setActiveIndex((index) => (index + 1) % suggestions.length);
+    } else if (event.key === "ArrowUp" && suggestions.length) {
+      event.preventDefault();
+      setActiveIndex((index) => (index <= 0 ? suggestions.length - 1 : index - 1));
+    } else if (event.key === "Enter") {
+      event.preventDefault(); // never submit the whole report from the search box
+      if (open && activeIndex >= 0 && suggestions[activeIndex]) choose(suggestions[activeIndex]);
+      else if (searchableQuery) search(searchableQuery);
+    } else if (event.key === "Escape") {
       setOpen(false);
     }
   }
 
-  const optionId = (i: number) => `${listId}-opt-${i}`;
+  const optionId = (index: number) => `${listId}-opt-${index}`;
 
   return (
     <div className="relative">
-      <label htmlFor={`${listId}-input`} className="sr-only">Search an address or landmark</label>
+      <label htmlFor={`${listId}-input`} className="sr-only">
+        {t("search.label")}
+      </label>
       <div className="flex gap-2">
         <input
           id={`${listId}-input`}
           role="combobox"
-          aria-expanded={open && items.length > 0}
+          aria-expanded={open && suggestions.length > 0}
           aria-controls={listId}
           aria-autocomplete="list"
-          aria-activedescendant={open && active >= 0 ? optionId(active) : undefined}
+          aria-activedescendant={open && activeIndex >= 0 ? optionId(activeIndex) : undefined}
           autoComplete="off"
-          value={q}
-          onChange={(e) => { setQ(e.target.value); if (!typeahead) setOpen(false); }}
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            if (!typeahead) setOpen(false);
+          }}
           onKeyDown={onKeyDown}
-          onBlur={() => setTimeout(() => setOpen(false), 150)}
-          onFocus={() => items.length && setOpen(true)}
-          placeholder="Street or landmark, e.g. Katpadi bus stand"
-          maxLength={120}
-          className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none"
+          onBlur={() => setTimeout(() => setOpen(false), BLUR_CLOSE_DELAY_MS)}
+          onFocus={() => suggestions.length && setOpen(true)}
+          placeholder={t("search.placeholder")}
+          maxLength={LIMITS.search}
+          className={fieldClass}
         />
         {!typeahead && (
-          <button type="button" onClick={() => q.trim().length >= 3 && search(q.trim())}
-            className="rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white">Search</button>
+          <button
+            type="button"
+            onClick={() => searchableQuery && search(searchableQuery)}
+            className="whitespace-nowrap rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white"
+          >
+            {t("search.button")}
+          </button>
         )}
       </div>
-      {loading && <span className="absolute right-3 top-2.5 text-xs text-slate-500" aria-hidden="true">…</span>}
+      {loading && (
+        <span className="absolute right-3 top-2.5 text-xs text-slate-500" aria-hidden="true">
+          …
+        </span>
+      )}
 
-      {open && items.length > 0 && (
-        <ul id={listId} role="listbox" aria-label="Address suggestions"
-          className="absolute z-[1200] mt-1 w-full overflow-hidden rounded-md bg-white shadow-lg ring-1 ring-slate-200">
-          {items.map((s, i) => (
-            <li key={s.id} id={optionId(i)} role="option" aria-selected={i === active}
-              onMouseDown={(e) => { e.preventDefault(); choose(s); }}
-              onMouseEnter={() => setActive(i)}
-              className={`cursor-pointer px-3 py-2 text-sm ${i === active ? "bg-blue-50" : ""}`}>
-              <span className="font-medium">{s.main}</span>
-              {s.secondary && <span className="block text-xs text-slate-600">{s.secondary}</span>}
+      {open && suggestions.length > 0 && (
+        <ul
+          id={listId}
+          role="listbox"
+          aria-label={t("search.suggestions")}
+          className="absolute z-[1200] mt-1 w-full overflow-hidden rounded-md bg-white shadow-lg ring-1 ring-slate-200"
+        >
+          {suggestions.map((suggestion, index) => (
+            <li
+              key={suggestion.id}
+              id={optionId(index)}
+              role="option"
+              aria-selected={index === activeIndex}
+              // mousedown rather than click, and without moving focus, so the input's blur doesn't close the list first.
+              onMouseDown={(event) => {
+                event.preventDefault();
+                choose(suggestion);
+              }}
+              onMouseEnter={() => setActiveIndex(index)}
+              className={`cursor-pointer px-3 py-2 text-sm ${index === activeIndex ? "bg-blue-50" : ""}`}
+            >
+              <span className="font-medium">{suggestion.main}</span>
+              {suggestion.secondary && <span className="block text-xs text-slate-600">{suggestion.secondary}</span>}
             </li>
           ))}
           {/* Attribution required when showing predictions without a Google map: the text "Google Maps"
               (Places API policies), or the OpenStreetMap credit for the fallback. */}
           <li role="presentation" className="border-t border-slate-100 px-3 py-1 text-right text-[11px] text-slate-500">
-            {typeahead ? "Google Maps" : "Search by OpenStreetMap Nominatim"}
+            {typeahead ? "Google Maps" : t("search.osmCredit")}
           </li>
         </ul>
       )}
-      <p className="sr-only" aria-live="polite">{status}</p>
-      {status && !open && /fail|unavailable|No matches|Couldn/.test(status) && (
-        <p className="mt-1 text-xs text-amber-800">{status}</p>
-      )}
+      <p className="sr-only" aria-live="polite">
+        {status.text}
+      </p>
+      {/* Only problems are shown visibly; routine updates go to the live region above. */}
+      {status.problem && !open && <p className="mt-1 text-xs text-amber-800">{status.text}</p>}
     </div>
   );
 }

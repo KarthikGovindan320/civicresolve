@@ -1,79 +1,134 @@
+"use client";
+
 import type { PublicTicket } from "@/lib/types";
+import { useT } from "./I18nProvider";
 
-// =============================================================================
-// [PROBLEM STATEMENT ALIGNMENT] TRANSPARENCY & ACCOUNTABILITY STATISTICS (beyond the brief)
-// -----------------------------------------------------------------------------
-// Shown to citizens on /track and to staff on /staff. It answers the questions
-// a resident (or a commissioner) actually asks:
-//   "How many problems are open? How many are dangerous? How many are past
-//    their deadline? Do things get fixed, how fast, and on time? Which
-//    department is falling behind?"
-// This puts the brief's goal of making civic issue management "more
-// accessible, organized, and transparent" into numbers. Everything is
-// computed live from the ticket list, with no separate analytics store.
-// =============================================================================
-export default function Stats({ tickets }: { tickets: PublicTicket[] }) {
-  const open = tickets.filter((t) => t.status !== "Resolved");
-  const resolved = tickets.filter((t) => t.status === "Resolved" && t.resolvedAt);
-  const critical = open.filter((t) => t.priority === "Critical").length;
-  const overdue = open.filter((t) => t.overdue).length;
-  // Accountability metrics: mean time from report to resolution, and the share
-  // resolved within the priority's SLA.
-  const avgHours = resolved.length
-    ? resolved.reduce((s, t) => s + (Date.parse(t.resolvedAt!) - Date.parse(t.createdAt)), 0) / resolved.length / 36e5
-    : 0;
-  const onTime = (list: PublicTicket[]) => {
-    const r = list.filter((t) => t.status === "Resolved" && t.resolvedAt);
-    return r.length ? Math.round((100 * r.filter((t) => t.resolvedAt! <= t.slaDueAt).length) / r.length) : null;
-  };
-  const allOnTime = onTime(tickets);
+const MS_PER_HOUR = 36e5;
 
-  // Per-department workload and performance, worst backlog first.
-  const depts = [...new Set(tickets.map((t) => t.department))]
-    .map((d) => {
-      const mine = tickets.filter((t) => t.department === d);
+const isOpen = (ticket: PublicTicket) => ticket.status !== "Resolved";
+const isResolved = (ticket: PublicTicket) => ticket.status === "Resolved" && Boolean(ticket.resolvedAt);
+
+/** Percentage of resolved tickets that were fixed by their target date, or null when none are resolved yet. */
+function onTimePercent(tickets: PublicTicket[]): number | null {
+  const resolved = tickets.filter(isResolved);
+  if (!resolved.length) return null;
+  const onTime = resolved.filter((ticket) => ticket.resolvedAt! <= ticket.slaDueAt).length;
+  return Math.round((100 * onTime) / resolved.length);
+}
+
+/** Mean hours from report to resolution; 0 when nothing is resolved yet. */
+function averageHoursToFix(resolved: PublicTicket[]): number {
+  if (!resolved.length) return 0;
+  const totalMs = resolved.reduce(
+    (sum, ticket) => sum + (Date.parse(ticket.resolvedAt!) - Date.parse(ticket.createdAt)),
+    0,
+  );
+  return totalMs / resolved.length / MS_PER_HOUR;
+}
+
+/** Per-department workload and performance, worst backlog first. */
+function departmentRows(tickets: PublicTicket[]) {
+  return [...new Set(tickets.map((ticket) => ticket.department))]
+    .map((department) => {
+      const departmentTickets = tickets.filter((ticket) => ticket.department === department);
       return {
-        d,
-        open: mine.filter((t) => t.status !== "Resolved").length,
-        overdue: mine.filter((t) => t.overdue).length,
-        onTime: onTime(mine),
+        department,
+        open: departmentTickets.filter(isOpen).length,
+        overdue: departmentTickets.filter((ticket) => ticket.overdue).length,
+        onTime: onTimePercent(departmentTickets),
       };
     })
-    .sort((a, b) => b.overdue - a.overdue || b.open - a.open);
-  const max = Math.max(1, ...depts.map((x) => x.open));
+    .sort((first, second) => second.overdue - first.overdue || second.open - first.open);
+}
+
+/**
+ * Transparency and accountability statistics, shown to citizens on /track and
+ * to staff on /staff. It answers the questions a resident (or a commissioner)
+ * actually asks: how many problems are open, how many are dangerous, how many
+ * are past their deadline, do things get fixed, how fast and on time, and
+ * which department is falling behind. Everything is computed live from the
+ * ticket list, with no separate analytics store.
+ */
+export default function Stats({ tickets }: { tickets: PublicTicket[] }) {
+  const t = useT();
+  const open = tickets.filter(isOpen);
+  const resolved = tickets.filter(isResolved);
+  const critical = open.filter((ticket) => ticket.priority === "Critical").length;
+  const overdue = open.filter((ticket) => ticket.overdue).length;
+  const avgHours = averageHoursToFix(resolved);
+  const allOnTime = onTimePercent(tickets);
+  const departments = departmentRows(tickets);
+  // The longest bar represents the department with the most open issues.
+  const maxOpen = Math.max(1, ...departments.map((row) => row.open));
 
   return (
-    <section aria-label="Statistics" className="space-y-3">
+    <section aria-label={t("stats.label")} className="space-y-3">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <Tile label="Open issues" value={open.length} />
-        <Tile label="Critical open" value={critical} accent={critical ? "text-red-700" : undefined} />
-        <Tile label="Overdue" value={overdue} accent={overdue ? "text-red-700" : undefined} />
-        <Tile label="Resolved" value={resolved.length} />
-        <Tile label="Avg. time to fix" value={avgHours >= 48 ? `${(avgHours / 24).toFixed(1)} d` : `${avgHours.toFixed(1)} h`} />
-        <Tile label="Fixed on time" value={allOnTime === null ? "–" : `${allOnTime}%`} />
+        <Tile label={t("stats.open")} value={open.length} />
+        <Tile label={t("stats.critical")} value={critical} accent={critical ? "text-red-700" : undefined} />
+        <Tile label={t("stats.overdue")} value={overdue} accent={overdue ? "text-red-700" : undefined} />
+        <Tile label={t("stats.resolved")} value={resolved.length} />
+        <Tile
+          label={t("stats.avgTime")}
+          value={
+            avgHours >= 48
+              ? t("stats.days", { value: (avgHours / 24).toFixed(1) })
+              : t("stats.hours", { value: avgHours.toFixed(1) })
+          }
+        />
+        <Tile label={t("stats.onTime")} value={allOnTime === null ? "–" : `${allOnTime}%`} />
       </div>
       <div className="rounded-lg bg-white p-4 ring-1 ring-slate-200">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-slate-600">Departments: open issues, overdue, on-time rate</h3>
-        <table className="mt-2 w-full text-xs">
+        <h3 className="text-xs font-medium uppercase tracking-wide text-slate-600">{t("stats.departments")}</h3>
+        {/* On a phone each department becomes a small block (name, then its numbers) so long
+            translated labels never push the table off screen. The explicit roles keep it a
+            table for screen readers even where the rows are laid out with flexbox. */}
+        <table role="table" className="mt-2 w-full text-xs">
           <thead className="sr-only">
-            <tr><th>Department</th><th>Open issues</th><th>Overdue</th><th>On time</th></tr>
+            <tr role="row">
+              <th role="columnheader">{t("stats.colDepartment")}</th>
+              <th role="columnheader">{t("stats.open")}</th>
+              <th role="columnheader">{t("stats.overdue")}</th>
+              <th role="columnheader">{t("stats.colOnTime")}</th>
+            </tr>
           </thead>
           <tbody>
-            {depts.map((x) => (
-              <tr key={x.d}>
-                <th scope="row" className="py-1 pr-2 text-left font-normal sm:w-48">{x.d}</th>
-                <td className="py-1">
+            {departments.map((row) => (
+              <tr
+                key={row.department}
+                role="row"
+                className="flex flex-wrap items-center gap-x-3 border-slate-100 py-1 max-sm:border-t sm:table-row sm:py-0"
+              >
+                <th
+                  scope="row"
+                  role="rowheader"
+                  lang="en"
+                  className="w-full pr-2 text-left font-medium sm:w-48 sm:py-1 sm:font-normal"
+                >
+                  {row.department}
+                </th>
+                <td role="cell" className="min-w-32 flex-1 sm:py-1">
                   <span className="flex items-center gap-2">
                     <span className="h-2 min-w-8 flex-1 rounded bg-slate-100" aria-hidden>
-                      <span className="block h-2 rounded bg-emerald-600" style={{ width: `${(x.open / max) * 100}%` }} />
+                      <span
+                        className="block h-2 rounded bg-emerald-600"
+                        style={{ width: `${(row.open / maxOpen) * 100}%` }}
+                      />
                     </span>
-                    <span className="w-14 whitespace-nowrap tabular-nums">{x.open} open</span>
+                    <span className="min-w-14 whitespace-nowrap tabular-nums">
+                      {t("stats.rowOpen", { count: row.open })}
+                    </span>
                   </span>
                 </td>
-                <td className={`whitespace-nowrap py-1 pl-2 text-right tabular-nums ${x.overdue ? "font-semibold text-red-700" : "text-slate-600"}`}>
-                  {x.overdue} overdue
+                <td
+                  role="cell"
+                  className={`whitespace-nowrap text-right tabular-nums sm:py-1 sm:pl-2 ${row.overdue ? "font-semibold text-red-700" : "text-slate-600"}`}
+                >
+                  {t("stats.rowOverdue", { count: row.overdue })}
                 </td>
-                <td className="whitespace-nowrap py-1 pl-2 text-right tabular-nums text-slate-700">{x.onTime === null ? "–" : `${x.onTime}% on time`}</td>
+                <td role="cell" className="whitespace-nowrap text-right tabular-nums text-slate-700 sm:py-1 sm:pl-2">
+                  {row.onTime === null ? "–" : t("stats.rowOnTime", { percent: row.onTime })}
+                </td>
               </tr>
             ))}
           </tbody>

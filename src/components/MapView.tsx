@@ -3,113 +3,131 @@
 import "leaflet/dist/leaflet.css";
 import { useEffect } from "react";
 import { CircleMarker, MapContainer, Popup, TileLayer, useMap, useMapEvents } from "react-leaflet";
-import type { PublicTicket as Ticket } from "@/lib/types";
-import { PRIORITY_COLOR } from "./badges";
+import type { PublicTicket } from "@/lib/types";
+import { useT } from "./I18nProvider";
+import { PRIORITY_COLOR, RESOLVED_COLOR } from "./badges";
 
-// =============================================================================
-// [PROBLEM STATEMENT ALIGNMENT] INTERACTIVE MAP (Leaflet + OpenStreetMap)
-// -----------------------------------------------------------------------------
-// One component, two jobs:
-//   • Location picker on the report form (BRIEF ✔ "location"): tap to drop a pin.
-//   • City-wide issue map on the tracking dashboards: every ticket is a circle
-//     coloured by priority (red = Critical … green = Low), grey once resolved,
-//     and larger when more citizens reported it. You can see at a glance where
-//     the city's most urgent and most-reported problems are. This serves the
-//     brief's closing goal: "visualize progress towards resolution".
-// OpenStreetMap tiles need no API key, no billing and no quota.
-// =============================================================================
+interface Coordinates {
+  lat: number;
+  lng: number;
+}
 
-export const VELLORE = { lat: 12.9165, lng: 79.1325 };
+/** Where the map opens when no location is given: the centre of Vellore. */
+export const VELLORE: Coordinates = { lat: 12.9165, lng: 79.1325 };
+
+/** Zoom level close enough to tell neighbouring streets apart when jumping to a picked location. */
+const STREET_ZOOM = 15;
 
 export interface MapViewProps {
-  tickets?: Ticket[];
-  picked?: { lat: number; lng: number } | null;
-  onPick?: (p: { lat: number; lng: number }) => void;
+  /** Issues to plot as priority-coloured circles. */
+  tickets?: PublicTicket[];
+  /** The location chosen on the report form, shown as a blue pin. */
+  picked?: Coordinates | null;
+  /** Makes the map a location picker: called when the user clicks or presses Enter. */
+  onPick?: (location: Coordinates) => void;
   height?: number;
-  center?: { lat: number; lng: number };
+  center?: Coordinates;
   zoom?: number;
 }
 
-// [ACCESSIBILITY] Picking a location must not require a mouse or touch screen.
-// Leaflet's map container is keyboard-focusable and pans with the arrow keys; we
-// add Enter (or Space) to pin the current map centre, marked by a crosshair.
-// Together with the "Use my location" button this gives two non-pointer ways
-// to set a location (WCAG 2.1.1 Keyboard).
-function ClickHandler({ onPick }: { onPick: MapViewProps["onPick"] }) {
+/**
+ * Turns clicks and key presses into picked locations. Picking must not need a
+ * mouse or touch screen: Leaflet's map container is keyboard-focusable and
+ * pans with the arrow keys, and this adds Enter (or Space) to pin the current
+ * map centre, marked by a crosshair. Together with the "Use my location"
+ * button that gives two non-pointer ways to set a location (WCAG 2.1.1).
+ */
+function PickHandler({ onPick }: { onPick: MapViewProps["onPick"] }) {
   const map = useMapEvents({
-    click: (e) => onPick?.({ lat: e.latlng.lat, lng: e.latlng.lng }),
-    keydown: (e) => {
-      const k = (e.originalEvent as KeyboardEvent).key;
-      if (k === "Enter" || k === " ") {
-        e.originalEvent.preventDefault();
-        const c = map.getCenter();
-        onPick?.({ lat: c.lat, lng: c.lng });
+    click: (event) => onPick?.({ lat: event.latlng.lat, lng: event.latlng.lng }),
+    keydown: (event) => {
+      const { key } = event.originalEvent as KeyboardEvent;
+      if (key === "Enter" || key === " ") {
+        event.originalEvent.preventDefault();
+        const mapCentre = map.getCenter();
+        onPick?.({ lat: mapCentre.lat, lng: mapCentre.lng });
       }
     },
   });
   return null;
 }
 
-function Recenter({ to }: { to?: { lat: number; lng: number } | null }) {
+/** Moves the map to a newly picked location (from GPS or address search), zooming in if needed. */
+function Recenter({ target }: { target?: Coordinates | null }) {
   const map = useMap();
   useEffect(() => {
-    if (to) map.setView([to.lat, to.lng], Math.max(map.getZoom(), 15));
-  }, [to, map]);
+    if (target) map.setView([target.lat, target.lng], Math.max(map.getZoom(), STREET_ZOOM));
+  }, [target, map]);
   return null;
 }
 
+/**
+ * Interactive map (Leaflet with OpenStreetMap tiles, which need no API key,
+ * billing or quota). One component, two jobs:
+ *   - Location picker on the report form: tap to drop a pin.
+ *   - City-wide issue map on the tracking pages: every ticket is a circle
+ *     coloured by priority (red = Critical ... green = Low), grey once
+ *     resolved, and larger when more citizens reported it, so the most urgent
+ *     and most-reported problems stand out at a glance.
+ */
 export default function MapView({ tickets = [], picked, onPick, height = 380, center, zoom = 13 }: MapViewProps) {
-  const c = center ?? picked ?? VELLORE;
+  const t = useT();
+  const initialCentre = center ?? picked ?? VELLORE;
   return (
     <div className="relative">
-    <MapContainer
-      center={[c.lat, c.lng]}
-      zoom={zoom}
-      style={{ height, width: "100%" }}
-      className="rounded-lg ring-1 ring-slate-200"
-      // [ACCESSIBILITY] Prevents the map from hijacking page scroll on laptops and phones.
-      scrollWheelZoom={false}
-    >
-      <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-      />
-      {onPick && <ClickHandler onPick={onPick} />}
-      {onPick && <Recenter to={picked} />}
-      {tickets.map((t) => (
-        // Vector circle markers instead of image pins: no broken-icon issues with
-        // bundlers, and colour and size can encode priority and reporter count.
-        <CircleMarker
-          key={t.id}
-          center={[t.location.lat, t.location.lng]}
-          radius={7 + Math.min(t.reporterCount, 6)}
-          pathOptions={{
-            color: "#fff",
-            weight: 2,
-            fillColor: t.status === "Resolved" ? "#64748b" : PRIORITY_COLOR[t.priority],
-            fillOpacity: t.status === "Resolved" ? 0.5 : 0.9,
-          }}
-        >
-          <Popup>
-            <strong>{t.title}</strong>
-            <br />
-            {t.category} · {t.priority} · {t.status}
-            <br />
-            {t.reporterCount > 1 && <>{t.reporterCount} reporters<br /></>}
-            <a href={`/track/${t.id}`}>View {t.id}</a>
-          </Popup>
-        </CircleMarker>
-      ))}
-      {picked && (
-        <CircleMarker
-          center={[picked.lat, picked.lng]}
-          radius={10}
-          pathOptions={{ color: "#1d4ed8", weight: 3, fillColor: "#3b82f6", fillOpacity: 0.6 }}
-        >
-          <Popup>Issue location</Popup>
-        </CircleMarker>
-      )}
-    </MapContainer>
+      <MapContainer
+        center={[initialCentre.lat, initialCentre.lng]}
+        zoom={zoom}
+        style={{ height, width: "100%" }}
+        className="rounded-lg ring-1 ring-slate-200"
+        // Keeps the map from hijacking page scroll on laptops and phones.
+        scrollWheelZoom={false}
+      >
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
+        {onPick && <PickHandler onPick={onPick} />}
+        {onPick && <Recenter target={picked} />}
+        {tickets.map((ticket) => (
+          // Vector circle markers instead of image pins: no broken-icon issues with
+          // bundlers, and colour and size can encode priority and reporter count.
+          <CircleMarker
+            key={ticket.id}
+            center={[ticket.location.lat, ticket.location.lng]}
+            radius={7 + Math.min(ticket.reporterCount, 6)}
+            pathOptions={{
+              color: "#fff",
+              weight: 2,
+              fillColor: ticket.status === "Resolved" ? RESOLVED_COLOR : PRIORITY_COLOR[ticket.priority],
+              fillOpacity: ticket.status === "Resolved" ? 0.5 : 0.9,
+            }}
+          >
+            <Popup>
+              <strong>{ticket.title}</strong>
+              <br />
+              {t(`category.${ticket.category}`)} · {t(`priority.${ticket.priority}`)} · {t(`status.${ticket.status}`)}
+              <br />
+              {ticket.reporterCount > 1 && (
+                <>
+                  {t("common.reporters", { count: ticket.reporterCount })}
+                  <br />
+                </>
+              )}
+              <a href={`/track/${ticket.id}`}>{t("map.view", { id: ticket.id })}</a>
+            </Popup>
+          </CircleMarker>
+        ))}
+        {picked && (
+          <CircleMarker
+            center={[picked.lat, picked.lng]}
+            radius={10}
+            pathOptions={{ color: "#1d4ed8", weight: 3, fillColor: "#3b82f6", fillOpacity: 0.6 }}
+          >
+            <Popup>{t("map.issueLocation")}</Popup>
+          </CircleMarker>
+        )}
+      </MapContainer>
       {/* Centre crosshair for keyboard pinning; decorative, so hidden from screen readers. */}
       {onPick && (
         <span
