@@ -1,5 +1,5 @@
 // =============================================================================
-// [GOOGLE SERVICES][CODE QUALITY] PERSISTENCE LAYER: one interface, two interchangeable backends
+// Persistence layer: one interface, two interchangeable backends
 // -----------------------------------------------------------------------------
 //   • FirestoreStore: production on Google Cloud Run (serverless, scales to zero,
 //     survives redeploys). Enabled with STORE=firestore.
@@ -10,91 +10,141 @@
 // map and statistics are meaningful from the very first page load.
 // =============================================================================
 
-// [SECURITY] "server-only" makes the build FAIL if this module is ever imported into
+// "server-only" makes the build fail if this module is ever imported into
 // browser code, so database credentials can never leak to the client.
 import "server-only";
 import { promises as fs } from "fs";
 import path from "path";
 import seed from "../../seed/vellore_tickets.json";
 import { recomputePriority } from "./rules";
-import type { Category, HistoryEntry, Status, Ticket } from "./types";
+import type { Category, HistoryEntry, Message, Ticket } from "./types";
 
+/** A photo as kept in the image collection, apart from the ticket itself. */
 export interface StoredImage {
   mimeType: string;
-  data: string; // base64
+  /** Base64-encoded bytes. */
+  data: string;
 }
 
-// [CODE QUALITY] The routes depend on this interface, not on a concrete database
-// (dependency inversion), which is also what lets the test suite run the real
-// API against a throwaway local store.
+/**
+ * What the routes depend on, instead of a concrete database (dependency
+ * inversion). It is also what lets the test suite run the real API against a
+ * throwaway local store.
+ */
 export interface Store {
   list(): Promise<Ticket[]>;
   /** Open (not resolved) tickets in one category: the duplicate-detection candidates. */
   listOpen(category: Category): Promise<Ticket[]>;
   get(id: string): Promise<Ticket | null>;
-  put(t: Ticket): Promise<void>;
+  put(ticket: Ticket): Promise<void>;
   nextId(): Promise<string>;
-  putImage(id: string, img: StoredImage): Promise<void>;
+  putImage(id: string, image: StoredImage): Promise<void>;
   getImage(id: string): Promise<StoredImage | null>;
 }
 
-/** Give seed tickets a plausible status history so the tracking timeline has something to show. */
-// Seed tickets are run through the same recomputePriority() as live tickets, so
-// the demo data obeys the same safety rules and reporter-count logic.
-function normalizeSeed(raw: Ticket): Ticket {
+const TICKET_ID_PREFIX = "CR-";
+/** The first ticket ever issued is CR-1001. */
+const TICKET_ID_FLOOR = 1000;
+const DAY_MS = 864e5;
+/** Seed tickets that are in progress promise a fix this many days after they were accepted. */
+const SEED_FIX_DAYS = 2;
+/** The seed ticket that carries a sample translated conversation. */
+const SEED_CONVERSATION_TICKET_ID = "CR-1004";
+
+const TICKETS_COLLECTION = "tickets";
+const IMAGES_COLLECTION = "images";
+
+/** The number inside a ticket id ("CR-1042" → 1042), or 0 if there is none. */
+const ticketNumber = (id: string) => Number(id.replace(/\D/g, "")) || 0;
+
+/** The id after the highest one in use. */
+function nextTicketNumber(ids: Iterable<string>): number {
+  return Math.max(TICKET_ID_FLOOR, ...[...ids].map(ticketNumber)) + 1;
+}
+
+const isOpenInCategory = (ticket: Ticket, category: Category) =>
+  ticket.category === category && ticket.status !== "Resolved";
+
+/** The calendar day (YYYY-MM-DD) `days` after an ISO timestamp. */
+const dayAfter = (iso: string, days: number) => new Date(Date.parse(iso) + days * DAY_MS).toISOString().slice(0, 10);
+
+/** A seed ticket's status history: Reported, then In Progress and Resolved as far as it got. */
+function seedHistory(raw: Ticket): HistoryEntry[] {
   const history: HistoryEntry[] = [{ status: "Reported", at: raw.createdAt }];
-  if (raw.status !== "Reported") {
-    const order: Status[] = ["In Progress", "Resolved"];
-    for (const s of order) {
-      if (s === "Resolved" && raw.status !== "Resolved") break;
-      history.push({
-        status: s,
-        at: s === "Resolved" ? (raw.resolvedAt ?? raw.updatedAt) : raw.updatedAt,
-        note: s === "In Progress" ? raw.adminNotes[0] : raw.adminNotes.at(-1),
-      });
-    }
-  }
-  // Workflow state consistent with each seed ticket's status, so the department
-  // queues, SLA tracking and confirmation flow have realistic data on day one.
-  const day = (iso: string, d: number) => new Date(Date.parse(iso) + d * 864e5).toISOString().slice(0, 10);
-  const workflow: Partial<Ticket> = {
+  if (raw.status === "Reported") return history;
+  history.push({ status: "In Progress", at: raw.updatedAt, note: raw.adminNotes[0] });
+  if (raw.status === "Resolved")
+    history.push({ status: "Resolved", at: raw.resolvedAt ?? raw.updatedAt, note: raw.adminNotes.at(-1) });
+  return history;
+}
+
+/** Resolution record for seed tickets that are already fixed (they predate photo verification). */
+function seedResolution(raw: Ticket): Ticket["resolution"] {
+  if (raw.status !== "Resolved") return null;
+  return {
+    note: raw.adminNotes.at(-1) ?? "Fixed",
+    hasPhoto: false,
+    aiVerdict: "unclear",
+    aiReason: "Resolved before photo verification was introduced.",
+    by: raw.department,
+    at: raw.resolvedAt ?? raw.updatedAt,
+  };
+}
+
+/** One seed ticket carries a sample department ↔ citizen conversation (with translation) to show the flow. */
+function seedMessages(raw: Ticket): Message[] {
+  if (raw.id !== SEED_CONVERSATION_TICKET_ID) return [];
+  return [
+    {
+      id: "seed1",
+      from: "department",
+      text: "Suction truck dispatched. Crew will reach Gandhi Nagar market by 2 pm.",
+      lang: "en",
+      translation: "உறிஞ்சும் லாரி அனுப்பப்பட்டது. குழு மதியம் 2 மணிக்குள் காந்தி நகர் சந்தைக்கு வரும்.",
+      at: raw.updatedAt,
+    },
+    {
+      id: "seed2",
+      from: "citizen",
+      text: "நன்றி. சந்தை நுழைவாயில் அருகே தான் அதிகம் தண்ணீர் தேங்கியுள்ளது.",
+      lang: "ta",
+      translation: "Thank you. The water is pooling most near the market entrance.",
+      at: raw.updatedAt,
+    },
+  ];
+}
+
+/**
+ * Give a seed ticket a plausible history and workflow state consistent with its status, so the
+ * tracking timeline, department queues and SLA figures have realistic data on day one. Seed tickets
+ * go through the same recomputePriority() as live tickets, so they obey the same safety rules.
+ */
+function normalizeSeed(raw: Ticket): Ticket {
+  return recomputePriority({
+    ...raw,
     acknowledgedAt: raw.status === "Reported" ? null : raw.updatedAt,
-    expectedFixDate: raw.status === "In Progress" ? day(raw.updatedAt, 2) : null,
+    expectedFixDate: raw.status === "In Progress" ? dayAfter(raw.updatedAt, SEED_FIX_DAYS) : null,
     transfers: 0,
     reporters: [],
-    messages: [],
+    messages: seedMessages(raw),
     reopenCount: 0,
-    resolution:
-      raw.status === "Resolved"
-        ? {
-            note: raw.adminNotes.at(-1) ?? "Fixed",
-            hasPhoto: false,
-            aiVerdict: "unclear",
-            aiReason: "Resolved before photo verification was introduced.",
-            by: raw.department,
-            at: raw.resolvedAt ?? raw.updatedAt,
-          }
-        : null,
+    resolution: seedResolution(raw),
     citizenConfirmation: raw.status === "Resolved" ? "confirmed" : null,
-  };
-  // A sample department ↔ citizen conversation (with translation) to show the flow.
-  if (raw.id === "CR-1004") {
-    workflow.messages = [
-      { id: "seed1", from: "department", text: "Suction truck dispatched. Crew will reach Gandhi Nagar market by 2 pm.", lang: "en", translation: "உறிஞ்சும் லாரி அனுப்பப்பட்டது. குழு மதியம் 2 மணிக்குள் காந்தி நகர் சந்தைக்கு வரும்.", at: raw.updatedAt },
-      { id: "seed2", from: "citizen", text: "நன்றி. சந்தை நுழைவாயில் அருகே தான் அதிகம் தண்ணீர் தேங்கியுள்ளது.", lang: "ta", translation: "Thank you. The water is pooling most near the market entrance.", at: raw.updatedAt },
-    ];
-  }
-  return recomputePriority({ ...raw, ...workflow, history, basePriority: raw.priority, classifiedBy: "seed" });
+    history: seedHistory(raw),
+    basePriority: raw.priority,
+    classifiedBy: "seed",
+  });
 }
 
 const seedTickets = () => (seed as unknown as Ticket[]).map(normalizeSeed);
 
 // ---------- Local JSON file store (dev, or self-hosted) ----------
-// [EFFICIENCY] In-memory Map for fast reads, plus write-through to disk. Writes are chained on
+// An in-memory Map for fast reads, plus write-through to disk. Writes are chained on
 // a single promise so concurrent requests can never interleave and corrupt the file.
 class FileStore implements Store {
   private dir = process.env.DATA_DIR || path.join(process.cwd(), "data");
   private file = path.join(this.dir, "tickets.json");
+  private imageDir = path.join(this.dir, "images");
   private cache: Map<string, Ticket> | null = null;
   private writing: Promise<void> = Promise.resolve();
 
@@ -108,16 +158,15 @@ class FileStore implements Store {
       await fs.mkdir(this.dir, { recursive: true });
       await fs.writeFile(this.file, JSON.stringify(tickets, null, 2));
     }
-    this.cache = new Map(tickets.map((t) => [t.id, t]));
+    this.cache = new Map(tickets.map((ticket) => [ticket.id, ticket]));
     return this.cache;
   }
 
-  private flush() {
-    const snapshot = JSON.stringify([...this.cache!.values()], null, 2);
-    // [CODE QUALITY] Found while testing in a real browser: if ./data was deleted while the
-    // server was running, every write threw ENOENT, and because the chain kept the rejected
-    // promise, ALL later writes failed too. Now the directory is re-created on each flush, and
-    // an earlier failure never poisons the queue.
+  private flush(tickets: Map<string, Ticket>) {
+    const snapshot = JSON.stringify([...tickets.values()], null, 2);
+    // If ./data is deleted while the server is running, a write throws ENOENT, and a
+    // chain that kept the rejected promise would fail every later write too. So the
+    // directory is re-created on each flush, and an earlier failure never poisons the queue.
     this.writing = this.writing
       .catch(() => undefined)
       .then(async () => {
@@ -131,26 +180,26 @@ class FileStore implements Store {
     return [...(await this.load()).values()];
   }
   async listOpen(category: Category) {
-    return (await this.list()).filter((t) => t.category === category && t.status !== "Resolved");
+    return (await this.list()).filter((ticket) => isOpenInCategory(ticket, category));
   }
   async get(id: string) {
     return (await this.load()).get(id) ?? null;
   }
-  async put(t: Ticket) {
-    (await this.load()).set(t.id, t);
-    await this.flush();
+  async put(ticket: Ticket) {
+    const tickets = await this.load();
+    tickets.set(ticket.id, ticket);
+    await this.flush(tickets);
   }
   async nextId() {
-    const ids = [...(await this.load()).keys()].map((k) => Number(k.replace(/\D/g, "")) || 0);
-    return `CR-${Math.max(1000, ...ids) + 1}`;
+    return `${TICKET_ID_PREFIX}${nextTicketNumber((await this.load()).keys())}`;
   }
-  async putImage(id: string, img: StoredImage) {
-    await fs.mkdir(path.join(this.dir, "images"), { recursive: true });
-    await fs.writeFile(path.join(this.dir, "images", `${id}.json`), JSON.stringify(img));
+  async putImage(id: string, image: StoredImage) {
+    await fs.mkdir(this.imageDir, { recursive: true });
+    await fs.writeFile(path.join(this.imageDir, `${id}.json`), JSON.stringify(image));
   }
   async getImage(id: string) {
     try {
-      return JSON.parse(await fs.readFile(path.join(this.dir, "images", `${id}.json`), "utf8"));
+      return JSON.parse(await fs.readFile(path.join(this.imageDir, `${id}.json`), "utf8"));
     } catch {
       return null;
     }
@@ -158,8 +207,8 @@ class FileStore implements Store {
 }
 
 // ---------- Firestore store (Cloud Run) ----------
-// [SECURITY][GOOGLE SERVICES] Uses Application Default Credentials: on Cloud Run the service account is
-// picked up automatically, so no key file ever ships in the repo or the image.
+// Uses Application Default Credentials: on Cloud Run the service account is picked up
+// automatically, so no key file ever ships in the repo or the container image.
 // firebase-admin is imported lazily, so local dev never loads it.
 class FirestoreStore implements Store {
   private dbPromise = (async () => {
@@ -167,77 +216,80 @@ class FirestoreStore implements Store {
     const { getFirestore } = await import("firebase-admin/firestore");
     if (!getApps().length) initializeApp(); // uses Application Default Credentials on Cloud Run
     const db = getFirestore();
-    const col = db.collection("tickets");
-    const empty = (await col.limit(1).get()).empty;
-    if (empty) {
+    const tickets = db.collection(TICKETS_COLLECTION);
+    const isEmpty = (await tickets.limit(1).get()).empty;
+    if (isEmpty) {
       const batch = db.batch();
-      for (const t of seedTickets()) batch.set(col.doc(t.id), t);
+      for (const ticket of seedTickets()) batch.set(tickets.doc(ticket.id), ticket);
       await batch.commit();
     }
     return db;
   })();
 
-  private async col(name = "tickets") {
+  private async collection(name = TICKETS_COLLECTION) {
     return (await this.dbPromise).collection(name);
   }
   async list() {
-    return (await (await this.col()).get()).docs.map((d) => d.data() as Ticket);
+    return (await (await this.collection()).get()).docs.map((doc) => doc.data() as Ticket);
   }
-  // [EFFICIENCY][GOOGLE SERVICES] The filter runs inside Firestore, so a new report
-  // reads only the open tickets of its own category, not the whole collection.
-  // Fewer document reads means lower latency and lower Firestore cost as the city grows.
+  // The filter runs inside Firestore, so a new report reads only the open tickets
+  // of its own category, not the whole collection. Fewer document reads means
+  // lower latency and lower Firestore cost as the city grows.
   async listOpen(category: Category) {
     try {
-      const snap = await (await this.col())
+      const snapshot = await (
+        await this.collection()
+      )
         .where("category", "==", category)
         .where("status", "in", ["Reported", "In Progress"])
         .get();
-      return snap.docs.map((d) => d.data() as Ticket);
+      return snapshot.docs.map((doc) => doc.data() as Ticket);
     } catch {
-      // [CODE QUALITY] If Firestore asks for a composite index that hasn't been
-      // created yet, degrade gracefully to an in-memory filter: same result,
-      // and a report is never blocked by a database configuration step.
-      return (await this.list()).filter((t) => t.category === category && t.status !== "Resolved");
+      // If Firestore asks for a composite index that hasn't been created yet,
+      // degrade gracefully to an in-memory filter: same result, and a report is
+      // never blocked by a database configuration step.
+      return (await this.list()).filter((ticket) => isOpenInCategory(ticket, category));
     }
   }
   async get(id: string) {
-    const d = await (await this.col()).doc(id).get();
-    return d.exists ? (d.data() as Ticket) : null;
+    const doc = await (await this.collection()).doc(id).get();
+    return doc.exists ? (doc.data() as Ticket) : null;
   }
-  async put(t: Ticket) {
-    await (await this.col()).doc(t.id).set(JSON.parse(JSON.stringify(t)));
+  async put(ticket: Ticket) {
+    // The JSON round trip drops `undefined` fields, which Firestore refuses to store.
+    await (await this.collection()).doc(ticket.id).set(JSON.parse(JSON.stringify(ticket)));
   }
-  // [CODE QUALITY] Ticket IDs (CR-1001, CR-1002, …) come from a counter inside a Firestore
+  // Ticket IDs (CR-1001, CR-1002, …) come from a counter inside a Firestore
   // transaction, so two citizens submitting at the same instant on different
   // Cloud Run instances can never get the same ID.
   async nextId() {
     const db = await this.dbPromise;
-    const ref = db.collection("meta").doc("counter");
-    return db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      let n = (snap.data()?.next as number | undefined) ?? 0;
-      if (!n) {
-        const ids = (await this.list()).map((t) => Number(t.id.replace(/\D/g, "")) || 0);
-        n = Math.max(1000, ...ids) + 1;
-      }
-      tx.set(ref, { next: n + 1 });
-      return `CR-${n}`;
+    const counterRef = db.collection("meta").doc("counter");
+    return db.runTransaction(async (transaction) => {
+      const counter = await transaction.get(counterRef);
+      let next = (counter.data()?.next as number | undefined) ?? 0;
+      // First use: start after the highest id already in the collection.
+      if (!next) next = nextTicketNumber((await this.list()).map((ticket) => ticket.id));
+      transaction.set(counterRef, { next: next + 1 });
+      return `${TICKET_ID_PREFIX}${next}`;
     });
   }
-  async putImage(id: string, img: StoredImage) {
-    // [EFFICIENCY] Images are downscaled on the client (~100-300 KB), which fits in a Firestore doc (1 MB limit).
-    await (await this.col("images")).doc(id).set(img);
+  async putImage(id: string, image: StoredImage) {
+    // Images are downscaled on the client (~100-300 KB), which fits in a Firestore doc (1 MB limit).
+    await (await this.collection(IMAGES_COLLECTION)).doc(id).set(image);
   }
   async getImage(id: string) {
-    const d = await (await this.col("images")).doc(id).get();
-    return d.exists ? (d.data() as StoredImage) : null;
+    const doc = await (await this.collection(IMAGES_COLLECTION)).doc(id).get();
+    return doc.exists ? (doc.data() as StoredImage) : null;
   }
 }
 
-// [EFFICIENCY] Singleton held on globalThis so Next.js hot-reload in dev doesn't open a new
-// database connection on every file save.
-const g = globalThis as unknown as { __civicStore?: Store };
+// The store is a singleton held on globalThis, so Next.js hot-reload in dev doesn't
+// open a new database connection on every file save.
+const globalWithStore = globalThis as unknown as { __civicStore?: Store };
+
+/** The configured persistence backend: Firestore when STORE=firestore, otherwise the local JSON file. */
 export function store(): Store {
-  g.__civicStore ??= process.env.STORE === "firestore" ? new FirestoreStore() : new FileStore();
-  return g.__civicStore;
+  globalWithStore.__civicStore ??= process.env.STORE === "firestore" ? new FirestoreStore() : new FileStore();
+  return globalWithStore.__civicStore;
 }

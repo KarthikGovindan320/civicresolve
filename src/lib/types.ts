@@ -1,5 +1,5 @@
 // =============================================================================
-// [CODE QUALITY][PROBLEM STATEMENT ALIGNMENT] DOMAIN MODEL: the single source of truth shared by the AI layer, the API,
+// DOMAIN MODEL: the single source of truth shared by the AI layer, the API,
 // the database and every screen.
 // -----------------------------------------------------------------------------
 // The same constant arrays drive (1) the JSON-schema enums sent to Gemini,
@@ -8,7 +8,7 @@
 // so the AI can never return a label the rest of the system doesn't understand.
 // =============================================================================
 
-// BRIEF ✔ "Category": the civic issue types named in the problem statement
+// "Category": the civic issue types named in the problem statement
 // (potholes, garbage, streetlights, water leakage, poor roads) plus sewage and
 // electrical hazards, the two most dangerous real-world categories.
 export const CATEGORIES = [
@@ -23,17 +23,17 @@ export const CATEGORIES = [
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
 
-// BRIEF ✔ Priority Detection: four ordered levels. The order matters:
+// Priority Detection: four ordered levels. The order matters:
 // rules.ts bumps priority by index, so the array runs lowest → highest.
 export const PRIORITIES = ["Low", "Medium", "High", "Critical"] as const;
 export type Priority = (typeof PRIORITIES)[number];
 
-// BRIEF ✔ Issue tracking: exactly the three statuses named in the brief
+// Issue tracking: exactly the three statuses named in the brief
 // ("Reported, In Progress, and Resolved"), in lifecycle order.
 export const STATUSES = ["Reported", "In Progress", "Resolved"] as const;
 export type Status = (typeof STATUSES)[number];
 
-// BRIEF ✔ Department Recommendation: realistic departments of an Indian
+// Department Recommendation: realistic departments of an Indian
 // municipal corporation (TANGEDCO is Tamil Nadu's electricity utility).
 export const DEPARTMENTS = [
   "Public Works (Roads)",
@@ -45,7 +45,7 @@ export const DEPARTMENTS = [
 ] as const;
 export type Department = (typeof DEPARTMENTS)[number];
 
-// [CODE QUALITY] Deterministic category → department routing table. Used when AI is
+// Deterministic category → department routing table. Used when AI is
 // unavailable and when an admin re-categorises a ticket, so routing is never
 // left blank. `Record<Category, Department>` makes TypeScript refuse to compile
 // if a category is ever added without a department.
@@ -66,7 +66,7 @@ export interface Location {
   address: string;
 }
 
-// [PROBLEM STATEMENT ALIGNMENT] Service-level targets: how fast each priority
+// Service-level targets: how fast each priority
 // must be resolved. Overdue tickets are escalated to the city admin and count
 // against the department's on-time rate. That gives "resolution" a deadline,
 // not just a status.
@@ -84,7 +84,7 @@ export const AUTO_CLOSE_DAYS = 3;
 // private link token; staff sign in either as a department or as the city admin.
 export type Role = { role: "admin" } | { role: "department"; department: Department };
 
-// [PROBLEM STATEMENT ALIGNMENT][ACCESSIBILITY] Two-way conversation between the
+// Two-way conversation between the
 // department and the citizen. Each message keeps the author's original text,
 // and Gemini adds a translation so a Tamil-speaking citizen and an
 // English-writing official can understand each other.
@@ -97,7 +97,7 @@ export interface Message {
   at: string;
 }
 
-// [SECURITY] A reporter's private access. The link token itself is NOT stored:
+// A reporter's private access. The link token itself is NOT stored:
 // it is HMAC-SHA256(server secret, salt), so the database alone (e.g. a leaked
 // backup) can't produce a working link, while the server can still put the link
 // in emails. The email (optional) is used only by the server to send updates.
@@ -112,7 +112,7 @@ export interface Reporter {
   at: string;
 }
 
-// [PROBLEM STATEMENT ALIGNMENT] Proof of resolution: the department's "after"
+// Proof of resolution: the department's "after"
 // photo, checked by Gemini against the citizen's original report.
 export interface Resolution {
   note: string;
@@ -198,7 +198,7 @@ export interface Ticket {
   hasReopenPhoto?: boolean;
 }
 
-// [SECURITY] What each audience is allowed to see. The API never returns a raw
+// What each audience is allowed to see. The API never returns a raw
 // Ticket: `reporters` (tokens, emails) is always removed; `messages` only go to
 // the ticket's own citizen and to staff.
 export type PublicTicket = Omit<Ticket, "reporters" | "messages"> & {
@@ -220,13 +220,26 @@ export interface Classification {
   transcript: string | null;
 }
 
-// [ACCESSIBILITY] Promised fix dates are stored as plain "YYYY-MM-DD" but shown as "24 Nov 2026",
+// Promised fix dates are stored as plain "YYYY-MM-DD" but shown as "24 Nov 2026",
 // the same style as every other date in the app (found by clicking through the app in a real
 // browser: raw ISO dates read oddly, especially to screen-reader users).
+/** Maximum lengths of citizen and staff input. Shared by the API (server-side truncation) and the
+ *  form fields (maxLength), so the two can never disagree. */
+export const LIMITS = {
+  title: 120,
+  description: 2000,
+  address: 200,
+  email: 254,
+  staffNote: 500,
+  message: 1000,
+  citizenNote: 1000,
+  search: 120,
+} as const;
+
 export const fmtDay = (isoDay: string) =>
   new Date(`${isoDay}T00:00:00Z`).toLocaleDateString("en-IN", { dateStyle: "medium", timeZone: "UTC" });
 
-// [SECURITY][PROBLEM STATEMENT ALIGNMENT] Two buckets for reports.
+// Two buckets for reports.
 // Phone-verified reports flow straight to the department. Reports sent WITHOUT phone verification
 // are not thrown away (a genuine citizen may have no phone or not want to share it), but they are
 // HELD: invisible to the public and to departments until the city admin approves them.

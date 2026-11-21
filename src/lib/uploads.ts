@@ -1,46 +1,64 @@
 import type { MediaPart } from "./gemini";
+import { failure, type Result } from "./result";
 import { isAllowedAudio, looksLikeAudio, sniffImageType } from "./security";
+import { LIMITS } from "./types";
 
-// [SECURITY][CODE QUALITY] One place for upload handling, shared by every route
-// that accepts files (new reports, "after" photos, reopen photos), so size caps
-// and content checks can't differ between endpoints.
+// One place for upload handling, shared by every route that accepts files (new
+// reports, "after" photos, reopen photos), so size caps and content checks
+// can't differ between endpoints.
 
-// [GOOGLE SERVICES] Images are stored base64-encoded in a Firestore document (1 MiB limit). 700 KB raw
-// becomes ~933 KB encoded, so even the largest allowed photo fits. Browsers downscale to ~150 KB anyway.
-export const MAX_IMAGE = 700_000; // bytes, after client-side downscale
-export const MAX_AUDIO = 4_000_000; // about 60 s of compressed voice
+// Images are stored base64-encoded in a Firestore document (1 MiB limit). 700 KB raw
+// becomes ~933 KB encoded, so even the largest allowed photo fits. Browsers downscale
+// to ~150 KB anyway.
+/** Largest accepted photo, in bytes (after the browser's own downscale). */
+export const MAX_IMAGE = 700_000;
+/** Largest accepted voice note, in bytes: about 60 s of compressed speech. */
+export const MAX_AUDIO = 4_000_000;
 
-export type UploadResult = { ok: true; part: MediaPart | null } | { ok: false; error: string; status: number };
+const UNKNOWN_MIME_TYPE = "application/octet-stream";
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-async function read(f: FormDataEntryValue | null, max: number): Promise<MediaPart | null | "too-big"> {
-  if (!f || typeof f === "string" || f.size === 0) return null;
-  if (f.size > max) return "too-big";
-  return { mimeType: f.type || "application/octet-stream", data: Buffer.from(await f.arrayBuffer()).toString("base64") };
+/** A validated upload (`part` is null when no file was attached), or the reason it was refused. */
+export type UploadResult = Result<{ part: MediaPart | null }>;
+
+async function readFile(entry: FormDataEntryValue | null, maxBytes: number): Promise<MediaPart | null | "too-big"> {
+  if (!entry || typeof entry === "string" || entry.size === 0) return null;
+  if (entry.size > maxBytes) return "too-big";
+  return {
+    mimeType: entry.type || UNKNOWN_MIME_TYPE,
+    data: Buffer.from(await entry.arrayBuffer()).toString("base64"),
+  };
 }
 
-// [SECURITY] Images: the real type comes from the file signature (magic bytes);
-// the client's MIME claim is discarded.
-export async function readImage(f: FormDataEntryValue | null): Promise<UploadResult> {
-  const p = await read(f, MAX_IMAGE);
-  if (p === "too-big") return { ok: false, error: "Image is too large.", status: 413 };
-  if (!p) return { ok: true, part: null };
-  const real = sniffImageType(p.data);
-  if (!real) return { ok: false, error: "Attachment must be a JPEG, PNG, WebP or GIF image.", status: 400 };
-  return { ok: true, part: { ...p, mimeType: real } };
+/**
+ * Read an optional image upload. The real type comes from the file signature
+ * (magic bytes); the client's MIME claim is discarded.
+ */
+export async function readImage(entry: FormDataEntryValue | null): Promise<UploadResult> {
+  const file = await readFile(entry, MAX_IMAGE);
+  if (file === "too-big") return failure(413, "Image is too large.");
+  if (!file) return { ok: true, part: null };
+  const sniffedType = sniffImageType(file.data);
+  if (!sniffedType) return failure(400, "Attachment must be a JPEG, PNG, WebP or GIF image.");
+  return { ok: true, part: { ...file, mimeType: sniffedType } };
 }
 
-// [SECURITY] Audio: only an allow-list of recording formats is forwarded to Gemini.
-export async function readAudio(f: FormDataEntryValue | null): Promise<UploadResult> {
-  const p = await read(f, MAX_AUDIO);
-  if (p === "too-big") return { ok: false, error: "Voice note is too long.", status: 413 };
-  if (!p) return { ok: true, part: null };
-  if (!isAllowedAudio(p.mimeType) || !looksLikeAudio(p.data)) return { ok: false, error: "Voice note must be an audio recording.", status: 400 };
-  return { ok: true, part: p };
+/** Read an optional voice note. Only an allow-list of recording formats is forwarded to Gemini. */
+export async function readAudio(entry: FormDataEntryValue | null): Promise<UploadResult> {
+  const file = await readFile(entry, MAX_AUDIO);
+  if (file === "too-big") return failure(413, "Voice note is too long.");
+  if (!file) return { ok: true, part: null };
+  if (!isAllowedAudio(file.mimeType) || !looksLikeAudio(file.data))
+    return failure(400, "Voice note must be an audio recording.");
+  return { ok: true, part: file };
 }
 
-// Simple, permissive email check: one @, a dot in the domain, no spaces, max length.
+/**
+ * Parse an optional email: null when blank, "invalid" when it doesn't look like
+ * one. Deliberately permissive: one @, a dot in the domain, no spaces, max length.
+ */
 export function parseEmail(raw: string): string | null | "invalid" {
-  const e = raw.trim().toLowerCase();
-  if (!e) return null;
-  return e.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) ? e : "invalid";
+  const email = raw.trim().toLowerCase();
+  if (!email) return null;
+  return email.length <= LIMITS.email && EMAIL_PATTERN.test(email) ? email : "invalid";
 }

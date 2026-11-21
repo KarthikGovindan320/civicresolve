@@ -1,5 +1,5 @@
 // =============================================================================
-// [PROBLEM STATEMENT ALIGNMENT] POST /api/tickets/[id]/confirm: the citizen closes the loop
+// POST /api/tickets/[id]/confirm: the citizen closes the loop
 // -----------------------------------------------------------------------------
 // After a department reports a fix, the citizen (authenticated by their private
 // link token) either:
@@ -12,64 +12,78 @@
 // =============================================================================
 
 import { NextResponse } from "next/server";
+import { ERROR_MESSAGES, fail, failWith, formText, loadTicketForReporter, readFormData } from "@/lib/http";
 import { log } from "@/lib/log";
 import { clientIp, rateLimit } from "@/lib/security";
-import { store } from "@/lib/store";
+import { LIMITS, type Ticket } from "@/lib/types";
 import { readImage } from "@/lib/uploads";
-import { isReporter, makeMessage, toPrivate } from "@/lib/workflow";
+import { appendHistory, appendMessage, makeMessage, toPrivate } from "@/lib/workflow";
 
+/** Image-store key suffix for the photo a citizen attaches when reopening. */
+const REOPEN_PHOTO_SUFFIX = "-reopen";
+
+const citizenMessage = (text: string, now: string) =>
+  makeMessage({ from: "citizen", text, lang: "en", translation: null }, now);
+
+/** The ticket after the citizen agrees it is fixed. */
+function confirmFix(ticket: Ticket, note: string, now: string): Ticket {
+  const confirmed: Ticket = { ...ticket, updatedAt: now, citizenConfirmation: "confirmed" };
+  return appendMessage(
+    appendHistory(confirmed, { status: "Resolved", at: now, note: "Citizen confirmed the fix ✔" }),
+    citizenMessage(note || "Confirmed: it's fixed. Thank you!", now),
+  );
+}
+
+/** The ticket after the citizen says it is not fixed: back to the department as In Progress. */
+function reopen(ticket: Ticket, note: string, hasPhoto: boolean, now: string): Ticket {
+  const reopened: Ticket = {
+    ...ticket,
+    status: "In Progress",
+    resolvedAt: null,
+    updatedAt: now,
+    citizenConfirmation: "reopened",
+    reopenCount: (ticket.reopenCount ?? 0) + 1,
+    hasReopenPhoto: hasPhoto, // lets the department see the citizen's evidence
+  };
+  return appendMessage(
+    appendHistory(reopened, { status: "In Progress", at: now, note: `Reopened by citizen: ${note}` }),
+    citizenMessage(`Not fixed: ${note}`, now),
+  );
+}
+
+/** Record the citizen's verdict on a reported fix: `decision` is "confirm" or "reopen". */
 export async function POST(req: Request, ctx: RouteContext<"/api/tickets/[id]/confirm">) {
   const { id } = await ctx.params;
-  const db = store();
-  const t = await db.get(id);
-  if (!t) return NextResponse.json({ error: "Ticket not found." }, { status: 404 });
-  // [SECURITY] Only a reporter of this ticket can confirm or reopen it.
-  if (!isReporter(t, req.headers.get("x-citizen-key")))
-    return NextResponse.json({ error: "Use the private link you received when reporting." }, { status: 403 });
-  if (!rateLimit(`confirm:${clientIp(req)}`).ok)
-    return NextResponse.json({ error: "Too many requests. Please wait a few minutes." }, { status: 429 });
-  if (t.status !== "Resolved")
-    return NextResponse.json({ error: "This issue hasn't been marked fixed yet." }, { status: 409 });
+  // Only a reporter of this ticket can confirm or reopen it.
+  const access = await loadTicketForReporter(req, id);
+  if (!access.ok) return failWith(access);
+  const { ticket, db } = access;
+  if (!rateLimit(`confirm:${clientIp(req)}`).ok) return fail(429, "Too many requests. Please wait a few minutes.");
+  if (ticket.status !== "Resolved") return fail(409, "This issue hasn't been marked fixed yet.");
 
-  const form = await req.formData().catch(() => null);
-  if (!form) return NextResponse.json({ error: "Expected multipart form data." }, { status: 400 });
+  const form = await readFormData(req);
+  if (!form) return fail(400, ERROR_MESSAGES.expectedFormData);
   const decision = String(form.get("decision") ?? "");
-  const note = String(form.get("note") ?? "").trim().slice(0, 1000);
+  const note = formText(form, "note", LIMITS.citizenNote);
   const now = new Date().toISOString();
 
   if (decision === "confirm") {
-    const next = {
-      ...t,
-      updatedAt: now,
-      citizenConfirmation: "confirmed" as const,
-      history: [...(t.history ?? []), { status: "Resolved" as const, at: now, note: "Citizen confirmed the fix ✔" }],
-      messages: [...(t.messages ?? []), makeMessage({ from: "citizen", text: note || "Confirmed: it's fixed. Thank you!", lang: "en", translation: null }, now)],
-    };
-    await db.put(next);
+    const confirmed = confirmFix(ticket, note, now);
+    await db.put(confirmed);
     log.info("ticket_confirmed", { id });
-    return NextResponse.json(toPrivate(next));
+    return NextResponse.json(toPrivate(confirmed));
   }
 
   if (decision === "reopen") {
-    if (!note) return NextResponse.json({ error: "Tell the department what is still wrong." }, { status: 400 });
-    const img = await readImage(form.get("photo"));
-    if (!img.ok) return NextResponse.json({ error: img.error }, { status: img.status });
-    if (img.part) await db.putImage(`${t.id}-reopen`, img.part);
-    const next = {
-      ...t,
-      status: "In Progress" as const,
-      resolvedAt: null,
-      updatedAt: now,
-      citizenConfirmation: "reopened" as const,
-      reopenCount: (t.reopenCount ?? 0) + 1,
-      hasReopenPhoto: Boolean(img.part), // lets the department actually SEE the evidence (found in browser testing)
-      history: [...(t.history ?? []), { status: "In Progress" as const, at: now, note: `Reopened by citizen: ${note}` }],
-      messages: [...(t.messages ?? []), makeMessage({ from: "citizen", text: `Not fixed: ${note}`, lang: "en", translation: null }, now)],
-    };
-    await db.put(next);
-    log.info("ticket_reopened", { id, reopenCount: next.reopenCount });
-    return NextResponse.json(toPrivate(next));
+    if (!note) return fail(400, "Tell the department what is still wrong.");
+    const photo = await readImage(form.get("photo"));
+    if (!photo.ok) return failWith(photo);
+    if (photo.part) await db.putImage(`${ticket.id}${REOPEN_PHOTO_SUFFIX}`, photo.part);
+    const reopened = reopen(ticket, note, Boolean(photo.part), now);
+    await db.put(reopened);
+    log.info("ticket_reopened", { id, reopenCount: reopened.reopenCount });
+    return NextResponse.json(toPrivate(reopened));
   }
 
-  return NextResponse.json({ error: "Decision must be 'confirm' or 'reopen'." }, { status: 400 });
+  return fail(400, "Decision must be 'confirm' or 'reopen'.");
 }

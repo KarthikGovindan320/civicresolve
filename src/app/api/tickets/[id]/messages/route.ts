@@ -1,58 +1,66 @@
 // =============================================================================
-// [PROBLEM STATEMENT ALIGNMENT] POST /api/tickets/[id]/messages
+// POST /api/tickets/[id]/messages
 // Department ↔ citizen conversation, anonymous and translated.
 // -----------------------------------------------------------------------------
 // Who can post:
 //   • the citizen: proves ownership with their private link token (x-citizen-key)
 //   • staff:       the department that owns the ticket, or the city admin
-// [SECURITY] Staff never learn the citizen's identity: there's no name or phone
-// number, and the optional email is used only by the server to relay a
-// notification.
-// [ACCESSIBILITY][GOOGLE SERVICES] Gemini translates each message: staff
-// replies go into the citizen's language, citizen replies into English.
+// Staff never learn the citizen's identity: there's no name or phone number,
+// and the optional email is used only by the server to relay a notification.
+// Gemini translates each message: staff replies go into the citizen's language,
+// citizen replies into English.
 // =============================================================================
 
 import { NextResponse } from "next/server";
-import { canActOn, staffRole } from "@/lib/auth";
+import { canActOn, isAdminRole, staffRole } from "@/lib/auth";
 import { translateMessage } from "@/lib/gemini";
-import { baseUrl, notifyReporters } from "@/lib/notify";
+import { CITIZEN_KEY_HEADER, ERROR_MESSAGES, baseUrl, fail, readJsonBody } from "@/lib/http";
+import { notifyReporters } from "@/lib/notify";
 import { clientIp, rateLimit } from "@/lib/security";
 import { store } from "@/lib/store";
-import { isReporter, makeMessage, toPrivate } from "@/lib/workflow";
+import { LIMITS, type Message, type Role, type Ticket } from "@/lib/types";
+import { appendMessage, isReporter, makeMessage, toPrivate } from "@/lib/workflow";
 
+/** Officials read and write English. */
+const STAFF_LANGUAGE = "en";
+
+/** Who is posting: responsible staff (by role), otherwise a holder of the ticket's private link, otherwise nobody. */
+function resolveAuthor(req: Request, ticket: Ticket, role: Role | null): Message["from"] | null {
+  if (role && canActOn(role, ticket)) return isAdminRole(role) ? "admin" : "department";
+  return isReporter(ticket, req.headers.get(CITIZEN_KEY_HEADER)) ? "citizen" : null;
+}
+
+/** Post a message to a ticket's private conversation, translated for the other side. */
 export async function POST(req: Request, ctx: RouteContext<"/api/tickets/[id]/messages">) {
   const { id } = await ctx.params;
   const db = store();
-  const t = await db.get(id);
-  if (!t) return NextResponse.json({ error: "Ticket not found." }, { status: 404 });
+  const ticket = await db.get(id);
+  if (!ticket) return fail(404, ERROR_MESSAGES.ticketNotFound);
 
-  const role = staffRole(req);
-  const citizen = isReporter(t, req.headers.get("x-citizen-key"));
-  const staff = canActOn(role, t);
-  if (!citizen && !staff) return NextResponse.json({ error: "Not allowed to message on this ticket." }, { status: 403 });
+  const author = resolveAuthor(req, ticket, staffRole(req));
+  if (!author) return fail(403, "Not allowed to message on this ticket.");
 
-  // [SECURITY][EFFICIENCY] Separate rate-limit bucket for messages (each one may call Gemini).
-  const limit = rateLimit(`msg:${clientIp(req)}`);
-  if (!limit.ok) return NextResponse.json({ error: "Too many messages. Please wait a few minutes." }, { status: 429 });
+  // A separate rate-limit bucket for messages (each one may call Gemini).
+  if (!rateLimit(`msg:${clientIp(req)}`).ok) return fail(429, "Too many messages. Please wait a few minutes.");
 
-  const body = (await req.json().catch(() => ({}))) as { text?: unknown };
-  const text = typeof body.text === "string" ? body.text.trim().slice(0, 1000) : "";
-  if (!text) return NextResponse.json({ error: "Message is empty." }, { status: 400 });
+  const body = await readJsonBody(req);
+  const text = typeof body.text === "string" ? body.text.trim().slice(0, LIMITS.message) : "";
+  if (!text) return fail(400, "Message is empty.");
 
   // Staff write → translate into the citizen's language; citizen writes → English.
-  const from = staff ? (role!.role === "admin" ? "admin" : "department") : "citizen";
-  const target = staff ? t.originalLanguage || "en" : "en";
-  const { detectedLanguage, translation } = await translateMessage(text, target);
+  const fromStaff = author !== "citizen";
+  const targetLanguage = fromStaff ? ticket.originalLanguage || STAFF_LANGUAGE : STAFF_LANGUAGE;
+  const { detectedLanguage, translation } = await translateMessage(text, targetLanguage);
   const now = new Date().toISOString();
-  const next = {
-    ...t,
-    updatedAt: now,
-    messages: [...(t.messages ?? []), makeMessage({ from, text, lang: detectedLanguage, translation }, now)],
-  };
-  await db.put(next);
-  if (staff) {
+  const updated = appendMessage(
+    { ...ticket, updatedAt: now },
+    makeMessage({ from: author, text, lang: detectedLanguage, translation }, now),
+  );
+  await db.put(updated);
+  if (fromStaff) {
     // Email relay: the citizen gets the message (and its translation) by email.
-    await notifyReporters(next, "New message about your issue", translation ? `${text}\n\n${translation}` : text, baseUrl(req));
+    const emailBody = translation ? `${text}\n\n${translation}` : text;
+    await notifyReporters(updated, "New message about your issue", emailBody, baseUrl(req));
   }
-  return NextResponse.json(toPrivate(next));
+  return NextResponse.json(toPrivate(updated));
 }

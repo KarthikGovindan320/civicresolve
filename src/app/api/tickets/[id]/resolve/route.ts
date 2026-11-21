@@ -1,8 +1,8 @@
 // =============================================================================
-// [PROBLEM STATEMENT ALIGNMENT] POST /api/tickets/[id]/resolve: proof of fix
+// POST /api/tickets/[id]/resolve: proof of fix
 // -----------------------------------------------------------------------------
-// A department can't just flip a ticket to "Resolved". It must upload an AFTER
-// photo of the site. Gemini compares it with the citizen's BEFORE photo and the
+// A department can't just flip a ticket to "Resolved". It must upload an "after"
+// photo of the site. Gemini compares it with the citizen's "before" photo and the
 // issue description and records a verdict (fixed / not_fixed / unclear) with a
 // reason. The ticket then waits for the citizen to confirm or reopen it
 // (./confirm); if they don't answer it auto-closes after AUTO_CLOSE_DAYS.
@@ -11,72 +11,87 @@
 // =============================================================================
 
 import { NextResponse } from "next/server";
-import { canActOn, roleLabel, staffRole } from "@/lib/auth";
-import { verifyResolution } from "@/lib/gemini";
+import { isAdminRole, roleLabel } from "@/lib/auth";
+import { verifyResolution, type MediaPart } from "@/lib/gemini";
+import { ERROR_MESSAGES, baseUrl, fail, failWith, formText, loadTicketForStaff, readFormData } from "@/lib/http";
 import { log } from "@/lib/log";
-import { baseUrl, notifyReporters } from "@/lib/notify";
-import { store } from "@/lib/store";
+import { notifyReporters } from "@/lib/notify";
+import type { Store } from "@/lib/store";
+import { LIMITS, type Resolution, type Ticket } from "@/lib/types";
 import { readImage } from "@/lib/uploads";
-import { makeMessage, toPrivate } from "@/lib/workflow";
+import { appendHistory, appendMessage, systemMessage, toPrivate } from "@/lib/workflow";
 
+/** Image-store key suffix for the department's proof-of-fix photo. */
+const AFTER_PHOTO_SUFFIX = "-after";
+const NOT_FIXED_WARNING = " ⚠ AI check: the photo may not show the issue fixed.";
+
+type Verdict = { verdict: Resolution["aiVerdict"]; reason: string };
+
+/** Ask Gemini whether the after-photo shows the fix; without a photo there is nothing to check. */
+async function checkFix(db: Store, ticket: Ticket, afterPhoto: MediaPart | null): Promise<Verdict> {
+  if (!afterPhoto) return { verdict: "unclear", reason: "Closed by the city admin without a photo." };
+  return verifyResolution({
+    summary: ticket.englishSummary,
+    category: ticket.category,
+    before: ticket.hasImage ? await db.getImage(ticket.id) : null,
+    after: afterPhoto,
+  });
+}
+
+/** Mark a ticket fixed, with a note and an after-photo that Gemini checks against the original report. */
 export async function POST(req: Request, ctx: RouteContext<"/api/tickets/[id]/resolve">) {
-  // [SECURITY] Staff only, and only the department that owns the ticket (or the admin).
-  const role = staffRole(req);
-  if (!role) return NextResponse.json({ error: "Staff sign-in required." }, { status: 401 });
   const { id } = await ctx.params;
-  const db = store();
-  const t = await db.get(id);
-  if (!t) return NextResponse.json({ error: "Ticket not found." }, { status: 404 });
-  if (!canActOn(role, t))
-    return NextResponse.json({ error: "This ticket is assigned to another department." }, { status: 403 });
-  if (t.status === "Resolved") return NextResponse.json({ error: "Already resolved." }, { status: 409 });
+  // Staff only, and only the department that owns the ticket (or the admin).
+  const access = await loadTicketForStaff(req, id);
+  if (!access.ok) return failWith(access);
+  const { ticket, role, db } = access;
+  if (ticket.status === "Resolved") return fail(409, "Already resolved.");
 
-  const form = await req.formData().catch(() => null);
-  if (!form) return NextResponse.json({ error: "Expected multipart form data." }, { status: 400 });
-  const note = String(form.get("note") ?? "").trim().slice(0, 500);
-  const img = await readImage(form.get("photo"));
-  if (!img.ok) return NextResponse.json({ error: img.error }, { status: img.status });
+  const form = await readFormData(req);
+  if (!form) return fail(400, ERROR_MESSAGES.expectedFormData);
+  const note = formText(form, "note", LIMITS.staffNote);
+  const photo = await readImage(form.get("photo"));
+  if (!photo.ok) return failWith(photo);
+  const afterPhoto = photo.part;
   // Proof is mandatory for departments; the city admin may close without a photo
   // (e.g. a duplicate or invalid report), which is recorded as such.
-  if (!img.part && role.role !== "admin")
-    return NextResponse.json({ error: "Upload an 'after' photo as proof of the fix." }, { status: 400 });
-  if (!note) return NextResponse.json({ error: "Describe what was done." }, { status: 400 });
+  if (!afterPhoto && !isAdminRole(role)) return fail(400, "Upload an 'after' photo as proof of the fix.");
+  if (!note) return fail(400, "Describe what was done.");
 
-  // Gemini verification against the original evidence.
-  const verdict = img.part
-    ? await verifyResolution({
-        summary: t.englishSummary,
-        category: t.category,
-        before: t.hasImage ? await db.getImage(t.id) : null,
-        after: img.part,
-      })
-    : { verdict: "unclear" as const, reason: "Closed by the city admin without a photo." };
-
+  const { verdict, reason } = await checkFix(db, ticket, afterPhoto);
   const now = new Date().toISOString();
-  const who = roleLabel(role);
-  if (img.part) await db.putImage(`${t.id}-after`, img.part);
-  const flag = verdict.verdict === "not_fixed" ? " ⚠ AI check: the photo may not show the issue fixed." : "";
-  const text = `${who} reports this is fixed: ${note}${flag}`;
-  const next = {
-    ...t,
-    status: "Resolved" as const,
-    resolvedAt: now,
-    updatedAt: now,
-    citizenConfirmation: "pending" as const,
-    resolution: { note, hasPhoto: Boolean(img.part), aiVerdict: verdict.verdict, aiReason: verdict.reason, by: who, at: now },
-    history: [...(t.history ?? []), { status: "Resolved" as const, at: now, note: text }],
-    messages: [
-      ...(t.messages ?? []),
-      makeMessage({ from: "system", text: `${text} Please confirm the fix or reopen the issue.`, lang: "en", translation: null }, now),
-    ],
-  };
-  await db.put(next);
-  log.info("ticket_resolved", { id: t.id, by: who, aiVerdict: verdict.verdict });
+  const resolvedBy = roleLabel(role);
+  if (afterPhoto) await db.putImage(`${ticket.id}${AFTER_PHOTO_SUFFIX}`, afterPhoto);
+
+  const summary = `${resolvedBy} reports this is fixed: ${note}${verdict === "not_fixed" ? NOT_FIXED_WARNING : ""}`;
+  const resolved: Ticket = appendMessage(
+    appendHistory(
+      {
+        ...ticket,
+        status: "Resolved",
+        resolvedAt: now,
+        updatedAt: now,
+        citizenConfirmation: "pending",
+        resolution: {
+          note,
+          hasPhoto: Boolean(afterPhoto),
+          aiVerdict: verdict,
+          aiReason: reason,
+          by: resolvedBy,
+          at: now,
+        },
+      },
+      { status: "Resolved", at: now, note: summary },
+    ),
+    systemMessage(`${summary} Please confirm the fix or reopen the issue.`, now),
+  );
+  await db.put(resolved);
+  log.info("ticket_resolved", { id: ticket.id, by: resolvedBy, aiVerdict: verdict });
   await notifyReporters(
-    next,
+    resolved,
     "Your issue has been marked fixed: please confirm",
-    `${text}\nIf it's not actually fixed, open your private link and press "Not fixed: reopen".`,
+    `${summary}\nIf it's not actually fixed, open your private link and press "Not fixed: reopen".`,
     baseUrl(req),
   );
-  return NextResponse.json(toPrivate(next));
+  return NextResponse.json(toPrivate(resolved));
 }
