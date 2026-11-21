@@ -19,9 +19,11 @@ import { PRIORITIES, type Priority, type Ticket } from "./types";
 // transcript, so a Tamil voice note about a live wire is still caught after
 // translation.
 const SAFETY_PATTERNS: { label: string; re: RegExp }[] = [
-  { label: "live wire", re: /live\s*wire|exposed\s*wire|sparking|electrocut|hanging\s*wire|current\s*wire/i },
-  { label: "open manhole", re: /open\s*manhole|manhole\s*(cover\s*)?(missing|open|broken)|uncovered\s*manhole/i },
-  { label: "sewage overflow", re: /sewage\s*(overflow|flowing|leak)|overflowing\s*sewage|sewer\s*overflow/i },
+  // English phrasings plus common Tamil and Hindi words, so the rule also fires on reports that
+  // skip Gemini (unverified reports, or AI unavailable) and are never translated.
+  { label: "live wire", re: /live\s*wire|exposed\s*wire|sparking|electrocut|hanging\s*wire|current\s*wire|மின்\s*கம்பி|மின்சார\s*கம்பி|கரண்ட்\s*கம்பி|बिजली\s*का\s*तार|करंट/i },
+  { label: "open manhole", re: /open\s*manhole|manhole\s*(cover\s*)?(missing|open|broken)|uncovered\s*manhole|பாதாள\s*சாக்கடை\s*மூடி|खुला\s*मैनहोल|मैनहोल\s*खुला/i },
+  { label: "sewage overflow", re: /sewage\s*(overflow|flowing|leak)|overflowing\s*sewage|sewer\s*overflow|கழிவுநீர்|सीवर\s*(का\s*पानी|ओवरफ्लो)/i },
 ];
 
 export function safetyRuleHit(text: string): string | null {

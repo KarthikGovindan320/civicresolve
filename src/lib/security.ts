@@ -37,8 +37,11 @@ export function rateLimit(key: string, now = Date.now(), max = MAX_HITS): { ok: 
 }
 
 export function clientIp(req: Request): string {
-  // Cloud Run's Google Front End puts the real client IP first in X-Forwarded-For.
-  return req.headers.get("x-forwarded-for")?.split(",")[0].trim() || "local";
+  // [SECURITY] Use the RIGHTMOST X-Forwarded-For entry: it is the one appended by Cloud Run's
+  // Google Front End and cannot be forged. Entries to its left come from the client, so
+  // taking the first one would let anyone dodge the rate limiter by sending a fake header.
+  const hops = req.headers.get("x-forwarded-for")?.split(",").map((h) => h.trim()).filter(Boolean);
+  return hops?.at(-1) || "local";
 }
 
 // [SECURITY] Constant-time comparison: the time taken doesn't reveal how many
@@ -67,4 +70,19 @@ export function sniffImageType(b64: string): "image/jpeg" | "image/png" | "image
 // [SECURITY] Voice notes: only audio MIME types are forwarded to Gemini.
 export function isAllowedAudio(mime: string): boolean {
   return /^audio\/(webm|ogg|mp4|mpeg|mp3|wav|x-wav|aac|m4a|x-m4a|flac)$/.test(mime.split(";")[0]);
+}
+
+// [SECURITY] Like images, audio is checked by its first bytes, not only by the browser's claim,
+// so a renamed file of another type is never forwarded to Gemini.
+export function looksLikeAudio(b64: string): boolean {
+  const h = Buffer.from(b64.slice(0, 24), "base64");
+  const ascii = (a: number, b: number) => h.toString("ascii", a, b);
+  return (
+    (h[0] === 0x1a && h[1] === 0x45 && h[2] === 0xdf && h[3] === 0xa3) || // WebM / Matroska (Chrome, Firefox)
+    ascii(0, 4) === "OggS" || // Ogg / Opus
+    ascii(4, 8) === "ftyp" || // MP4 / M4A / AAC in MP4 (Safari)
+    (ascii(0, 4) === "RIFF" && ascii(8, 12) === "WAVE") || // WAV
+    ascii(0, 3) === "ID3" || (h[0] === 0xff && (h[1] & 0xe0) === 0xe0) || // MP3 / ADTS AAC
+    ascii(0, 4) === "fLaC" // FLAC
+  );
 }

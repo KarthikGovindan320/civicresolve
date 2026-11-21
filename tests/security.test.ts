@@ -1,7 +1,7 @@
 // [TESTING][SECURITY] Request-level protections (src/lib/security.ts, src/lib/auth.ts).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isAdmin } from "@/lib/auth";
-import { isAllowedAudio, rateLimit, safeEqual, sniffImageType } from "@/lib/security";
+import { clientIp, isAllowedAudio, looksLikeAudio, rateLimit, safeEqual, sniffImageType } from "@/lib/security";
 
 const b64 = (bytes: number[] | string) =>
   Buffer.from(typeof bytes === "string" ? bytes : Uint8Array.from(bytes)).toString("base64");
@@ -64,5 +64,22 @@ describe("admin authentication", () => {
     vi.stubEnv("ADMIN_PASSCODE", "");
     vi.stubEnv("NODE_ENV", "production");
     expect(isAdmin(req("admin123"))).toBe(false);
+  });
+});
+
+// [TESTING][SECURITY] Hardening added after the final self-review.
+describe("hardening", () => {
+  it("rate-limits by the proxy-appended (rightmost) IP, so a forged X-Forwarded-For can't dodge it", () => {
+    const req = new Request("http://t", { headers: { "x-forwarded-for": "1.2.3.4, 203.0.113.9" } });
+    expect(clientIp(req)).toBe("203.0.113.9");
+    expect(clientIp(new Request("http://t"))).toBe("local");
+  });
+  it("accepts real audio signatures and rejects other files labelled as audio", () => {
+    const b64 = (bytes: number[]) => Buffer.from(bytes).toString("base64");
+    expect(looksLikeAudio(b64([0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0]))).toBe(true); // WebM
+    expect(looksLikeAudio(Buffer.from("OggS\0\0\0\0").toString("base64"))).toBe(true);
+    expect(looksLikeAudio(Buffer.from("\0\0\0\x20ftypM4A ").toString("base64"))).toBe(true);
+    expect(looksLikeAudio(Buffer.from("%PDF-1.7 hello").toString("base64"))).toBe(false);
+    expect(looksLikeAudio(b64([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]))).toBe(false); // PNG
   });
 });

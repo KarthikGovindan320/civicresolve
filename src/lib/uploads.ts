@@ -1,5 +1,5 @@
 import type { MediaPart } from "./gemini";
-import { isAllowedAudio, sniffImageType } from "./security";
+import { isAllowedAudio, looksLikeAudio, sniffImageType } from "./security";
 
 // [SECURITY][CODE QUALITY] One place for upload handling, shared by every route
 // that accepts files (new reports, "after" photos, reopen photos), so size caps
@@ -34,7 +34,7 @@ export async function readAudio(f: FormDataEntryValue | null): Promise<UploadRes
   const p = await read(f, MAX_AUDIO);
   if (p === "too-big") return { ok: false, error: "Voice note is too long.", status: 413 };
   if (!p) return { ok: true, part: null };
-  if (!isAllowedAudio(p.mimeType)) return { ok: false, error: "Voice note must be an audio recording.", status: 400 };
+  if (!isAllowedAudio(p.mimeType) || !looksLikeAudio(p.data)) return { ok: false, error: "Voice note must be an audio recording.", status: 400 };
   return { ok: true, part: p };
 }
 

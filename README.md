@@ -2,6 +2,11 @@
 
 AI-powered civic issue reporting **and resolution**. Citizens report potholes, garbage, broken streetlights or leaks by text, photo or **voice in any language**. **Google Gemini** classifies the category, priority and responsible department in one multimodal call, and the issue lands in that **department's work queue**. The department accepts it with a promised fix date, talks to the citizen anonymously (messages **auto-translated** by Gemini), and closes it only with an **after photo that Gemini checks against the original**. The citizen then confirms the fix or reopens it. Every issue has a priority-based deadline; overdue work is escalated to the city admin, and everyone can follow progress on a public map and timeline.
 
+## Chosen vertical
+**Civic issue reporting and resolution (smart city / citizen services).** The persona is an ordinary resident of an Indian city (the demo is set in Vellore, Tamil Nadu) who sees a pothole, an overflowing drain or a sparking wire and wants it fixed, often speaking Tamil or Hindi rather than English. The second persona is the municipal department that has to fix it, and the third is the city admin who has to see what is overdue.
+
+The problem is not just *reporting*: complaints today go into a black box, are routed to the wrong office, get closed without being fixed, and citizens never hear back. CivicResolve is an AI assistant that turns a messy, multilingual complaint into a routed, prioritised, trackable job, and keeps the department accountable until the citizen confirms the fix.
+
 ## Live demo
 **https://civicresolve-639026421453.asia-south1.run.app** (Google Cloud Run, Mumbai region, Firestore database, secrets in Secret Manager)
 
@@ -33,12 +38,29 @@ Try signing in as one department and opening another department's ticket: the se
 | **Problem statement alignment** | Every required feature (reporting, Gemini classification, priority detection, department recommendation, tracking dashboard, admin dashboard) **plus** a full resolution loop: accept with a promised date, anonymous translated chat, fixes accepted only with a Gemini-checked after photo, citizen confirm/reopen, SLA deadlines with escalation. |
 | **Google services** | Gemini (multimodal triage, duplicate detection, translation, before/after verification) · Cloud Run · Firestore · Cloud Build · Artifact Registry · Secret Manager · Cloud Logging · Places API (New) integrated. |
 | **Security** | Server-enforced per-department access, HMAC private links (never stored), OTP anti-spam with numbers that stay private, review queue for unverified reports, rate limits, file-signature upload checks, CSP + security headers, secrets in Secret Manager. |
-| **Testing** | 80 automated Vitest tests including the full API lifecycle, plus an end-to-end run on the live deployment with real Gemini calls. |
+| **Testing** | 86 automated Vitest tests including the full API lifecycle, plus an end-to-end run on the live deployment with real Gemini calls. |
 | **Accessibility** | Labelled controls, keyboard-operable map and address search (WAI-ARIA combobox), screen-reader announcements, voice reports in any language, text alongside every colour. |
 | **Efficiency** | One Gemini call per report, lightest model for short tasks, no cron jobs (deadlines computed on read), photos downscaled in the browser, small standalone container. |
 | **Code quality** | TypeScript strict, one shared domain model, schema-validated AI output, lint and typecheck clean, comments tagged by criterion. |
 
-## The workflow
+## Approach and logic
+Gemini does the judgement work, and deterministic rules wrap it so the outcome is predictable and safe. Every decision the app takes, and what it is based on:
+
+| Context the app sees | Decision | Where |
+|---|---|---|
+| Report text, photo and/or voice note, in any language | One multimodal Gemini call returns category, priority + a written reason, responsible department, detected language, English summary and transcript (schema-constrained JSON, validated with zod) | `src/lib/gemini.ts` → `classifyIssue()` |
+| Gemini unavailable or returns invalid output | Keyword classifier + the category the citizen chose; the report is never lost | `gemini.ts` → `fallbackClassify()` |
+| Words like "live wire", "open manhole", "sewage overflow" (English, Tamil, Hindi) | Priority forced to **Critical**; nobody, including staff, can lower it | `src/lib/rules.ts` |
+| An open ticket of the same category within 200 m | The 5 nearest go to a light Gemini call: same physical problem? If yes, the report **joins** that ticket (reporter count +1) instead of creating a duplicate | `api/tickets/route.ts`, `gemini.ts` → `findDuplicate()` |
+| 3+ / 6+ citizens on one ticket (public impact) | Priority raised one / two levels (capped at High; Critical stays rule-only) | `rules.ts` → `effectivePriority()` |
+| Priority | Deadline: Critical 24 h · High 3 days · Medium 7 days · Low 14 days; past it → overdue → escalated to the admin | `src/lib/workflow.ts` |
+| Phone verified by OTP | Normal path: Gemini triage, straight into the department queue | `api/tickets/route.ts` |
+| No phone verification | Kept, but in a separate **review bucket**: no Gemini spend, hidden from the public and departments until the admin approves it | `api/tickets/route.ts`, `staff/page.tsx` |
+| Department marks it fixed | Needs an after photo; Gemini compares it with the before photo and records fixed / not fixed / unclear with a reason | `api/tickets/[id]/resolve/route.ts` |
+| Citizen's answer to the fix | Confirm → closed; reopen → back to In Progress (reopen count shown to the admin); silence → auto-close after 3 days | `api/tickets/[id]/confirm/route.ts` |
+| Message written in Tamil or Hindi (either side) | Translated by Gemini and shown under the original; English-to-English skips the AI | `api/tickets/[id]/messages/route.ts` |
+
+## How it works
 ```
 Citizen reports (text / photo / voice, any language)
   → Gemini: category, priority + reason, department, English summary, transcript
@@ -52,9 +74,32 @@ Citizen reports (text / photo / voice, any language)
       → auto-closes after 3 days without a reply
 SLA per priority (Critical 24 h · High 3 d · Medium 7 d · Low 14 d) → overdue → escalated to the city admin
 ```
+
+```mermaid
+flowchart LR
+  C[Citizen browser] -->|report + photo / voice| R[Next.js API on Cloud Run]
+  R -->|text, image, audio| G[Gemini API]
+  G -->|validated JSON| R
+  R --> F[(Firestore)]
+  R -->|own queue only| D[Department staff]
+  R -->|all queues, review bucket| A[City admin]
+  R -->|private link: HMAC token| C
+  S[Secret Manager] -.->|API key, passcodes, link secret| R
+```
+What each side can see: the public sees tickets without any reporter data or messages; a department sees only its own tickets and never a citizen's phone or email; the citizen sees their own ticket's conversation through a private link that is never stored on the server.
+
 **Roles:** citizen (anonymous private link) · department staff (own queue only) · city admin (all departments, escalations, overrides of the AI).
 
 **Google stack:** Gemini API · Cloud Run · Firestore · Cloud Build · Artifact Registry · Secret Manager · Cloud Logging · Places API (New) (integrated and tested; switched on by adding a key, the live demo currently uses the OpenStreetMap fallback)
+
+## Assumptions and limitations
+- **SMS is a stub.** Indian law (TRAI DLT) requires a registered sender and template before an OTP SMS can reach arbitrary numbers, so the code is shown on screen in a clearly labelled demo note. `sendSms()` in `src/lib/otp.ts` is the single integration point.
+- **Address search** uses OpenStreetMap on the live demo; Google Places (New) is implemented and tested and switches on with a `GOOGLE_MAPS_API_KEY`.
+- **One city, Indian phone numbers:** the map, the address bias and the departments are set for Vellore; phone numbers are Indian mobiles (+91, 10 digits).
+- **Gemini's before/after verdict is advisory:** it is shown to the citizen and the admin, and the citizen's confirmation is what closes a ticket.
+- **Rate limits are kept in memory per Cloud Run instance** (enough for a demo scale; a shared store such as Memorystore would be used at city scale).
+- **Merged duplicates share one conversation** with the department, without any reporter identity.
+- **Staff sign in with passcodes** (one per department + admin) rather than individual accounts; demo passcodes are published above for the judges and will be rotated after judging.
 
 ---
 
@@ -96,7 +141,7 @@ Beyond the brief, to make it a real resolution process rather than a reporting f
 - TypeScript strict mode; one domain model (`src/lib/types.ts`) drives the Gemini schema, runtime validation, API validation and the UI, so values can't drift apart.
 - Clear layers: UI → API routes → domain logic (`rules.ts`, `gemini.ts`) → `Store` interface (Firestore or local file).
 - Gemini output is never trusted blindly: JSON-schema-constrained, then validated with zod.
-- ESLint clean, `tsc` clean, 80 automated tests.
+- ESLint clean, `tsc` clean, 86 automated tests.
 
 ### Security
 - Role-based access control enforced server-side: a department can act only on its own tickets; only the admin can override (`src/lib/auth.ts` → `canActOn`). Constant-time passcode checks; fails closed in production when passcodes aren't configured.
@@ -104,15 +149,16 @@ Beyond the brief, to make it a real resolution process rather than a reporting f
 - Audience-specific views (`toPublic` / `toPrivate` in `src/lib/workflow.ts`): public pages never contain messages or reporter data, and server pages pass only sanitised data to client components.
 - **Accountability against spam:** reports require an OTP-verified mobile number (stateless HMAC-signed challenge, 5-minute expiry, rate-limited per IP and per number). The number is stored only on the private reporter record and never returned by any API, shown to staff or logged, so it can be used solely to trace misuse. Reports sent without verification are not lost, but are held in a separate bucket: rule-classified (no Gemini spend), limited to 3 per device per window, and invisible to the public and departments until the city admin approves them. (SMS sending is a stub until a gateway is connected; the demo shows the code on screen.)
 - Per-IP rate limiting on report submission, which also protects the Gemini quota (`src/lib/security.ts`).
-- Uploads checked by **file signature**, not the browser's claim; size caps on images and audio; audio MIME allow-list.
+- Uploads checked by **file signature**, not the browser's claim: images (JPEG/PNG/WebP/GIF) and voice notes (WebM/Ogg/MP4/WAV/MP3/FLAC); size caps on both.
 - Strict input validation and enum whitelisting on every write (`api/tickets/route.ts`, `api/tickets/[id]/route.ts`).
 - Security headers: CSP, X-Frame-Options, nosniff, Permissions-Policy, HSTS (`next.config.ts`).
 - Secrets only in env / **Secret Manager**, never in the repo or the browser; `server-only` guards stop database code reaching client bundles.
-- Prompt-injection mitigation: citizen text is passed as labelled data, and model answers are restricted to enums and validated.
+- Prompt-injection mitigation: citizen text is fenced in `<report>` tags and declared as data, and every model answer (triage and duplicate matching) is restricted by a JSON schema, then validated with zod; a duplicate id is accepted only if it is one of the real nearby candidates. Internal AI errors are logged, never shown to citizens.
+- Rate limiting keys on the rightmost `X-Forwarded-For` entry (the one Cloud Run's front end appends), so a forged header can't dodge it.
 - Logs carry IDs and labels only, never citizens' text, photos or locations.
 
 ### Efficiency
-- **One** Gemini call per report does classification, priority, department, translation and transcription.
+- **One** Gemini call per report does classification, priority, department, translation and transcription. A second, lightweight call (duplicate matching) happens only when there are open tickets of the same category within 200 m.
 - Two model chains: judgement-heavy work (classification, photo checks) uses the stronger model; short text work (translation, duplicate matching) uses the lightest model (about 1 s). English-to-English messages skip AI entirely.
 - Deadlines, overdue flags and auto-close are computed when tickets are read: no cron jobs or background workers, and a stateless Cloud Run service.
 - Duplicate detection filters by distance first, then asks AI only about the 5 nearest candidates; the Firestore query reads only open tickets of the same category.
@@ -121,10 +167,10 @@ Beyond the brief, to make it a real resolution process rather than a reporting f
 - Leaflet code-split and loaded only on map pages; standalone Next.js build for small images and fast Cloud Run cold starts.
 
 ### Testing
-`npm test` runs **80 tests** (Vitest) in about a second, with no network needed:
-- `tests/rules.test.ts`: safety rules, priority boost and its cap, idempotency, distance maths.
+`npm test` runs **86 tests** (Vitest) in about a second, with no network needed:
+- `tests/rules.test.ts`: safety rules (including Tamil and Hindi phrasings), priority boost and its cap, idempotency, distance maths.
 - `tests/gemini.test.ts`: fallback classifier, language detection, behaviour with no API key.
-- `tests/security.test.ts`: file-signature sniffing, rate limiter, constant-time auth, fail-closed production auth.
+- `tests/security.test.ts`: image and audio signature sniffing, rate limiter, forged `X-Forwarded-For`, constant-time auth, fail-closed production auth.
 - `tests/workflow.test.ts`: SLA deadlines, overdue, auto-close, private-link tokens, privacy of public/private views, role mapping and per-department access.
 - `tests/places.test.ts`: Google Places request shape and parsing (stubbed HTTP), field mask, input validation, graceful failure, OpenStreetMap fallback.
 - `tests/otp.test.ts`: phone normalisation, code verification, number binding, expiry and tamper resistance.
@@ -146,7 +192,7 @@ Beyond the brief, to make it a real resolution process rather than a reporting f
 | **Firestore** | Ticket database (Native mode, asia-south1), transactional ID counter, server-side filtered queries; photos capped at 700 KB so they always fit a Firestore document |
 | **Cloud Build + Artifact Registry** | Builds and stores the container from source (`gcloud run deploy --source`) |
 | **Secret Manager** | Holds the Gemini API key, staff passcodes, link secret and SMTP credential |
-| **Gmail SMTP** (optional) | Email notifications to citizens |
+| **Gmail SMTP** (optional, off on the live demo) | Email notifications to citizens |
 | **Cloud Logging** | Structured JSON logs (`src/lib/log.ts`) with severity and searchable events |
 
 ---
@@ -156,7 +202,7 @@ Beyond the brief, to make it a real resolution process rather than a reporting f
 cp .env.example .env.local   # add GEMINI_API_KEY
 npm install
 npm run dev                  # http://localhost:3000
-npm test                     # 80 tests
+npm test                     # 86 tests
 ```
 Staff portal: http://localhost:3000/staff. Dev passcodes: `admin123` (city admin), `roads123`, `sanitation123`, `electricity123`, `water123`, `drainage123`, `general123` (departments).
 Data is stored in `./data/tickets.json` (seeded from `seed/vellore_tickets.json`). Delete `./data` to reset.

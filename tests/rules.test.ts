@@ -67,3 +67,13 @@ describe("haversine distance", () => {
     expect(d).toBeLessThan(117);
   });
 });
+
+// [TESTING] Safety rules also fire on untranslated Tamil and Hindi text (used when a report skips Gemini).
+describe("multilingual safety rules", () => {
+  it.each([
+    ["பேருந்து நிறுத்தம் அருகே மின் கம்பி அறுந்து கிடக்கிறது", "live wire"],
+    ["सड़क पर खुला मैनहोल है", "open manhole"],
+    ["தெருவில் கழிவுநீர் ஓடுகிறது", "sewage overflow"],
+  ])("%s → %s", (text, label) => expect(safetyRuleHit(text)).toBe(label));
+  it("does not fire on ordinary complaints", () => expect(safetyRuleHit("குப்பை அள்ளப்படவில்லை")).toBeNull());
+});
