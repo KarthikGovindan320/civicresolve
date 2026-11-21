@@ -17,3 +17,8 @@ export type Result<T extends object> = ({ ok: true } & T) | Failure;
 export function failure(status: number, error: string): Failure {
   return { ok: false, status, error };
 }
+
+/** Build a successful result carrying `value`. */
+export function success<T extends object>(value: T): { ok: true } & T {
+  return { ok: true, ...value };
+}

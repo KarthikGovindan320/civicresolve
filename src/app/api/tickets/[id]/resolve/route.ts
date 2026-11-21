@@ -11,11 +11,21 @@
 // =============================================================================
 
 import { NextResponse } from "next/server";
-import { isAdminRole, roleLabel } from "@/lib/auth";
+import { canActOn, isAdminRole, roleLabel } from "@/lib/auth";
 import { verifyResolution, type MediaPart } from "@/lib/gemini";
-import { ERROR_MESSAGES, baseUrl, fail, failWith, formText, loadTicketForStaff, readFormData } from "@/lib/http";
+import {
+  ERROR_MESSAGES,
+  baseUrl,
+  fail,
+  failWith,
+  formText,
+  loadTicketForStaff,
+  readFormData,
+  updateTicketAtomically,
+} from "@/lib/http";
 import { log } from "@/lib/log";
 import { notifyReporters } from "@/lib/notify";
+import { failure, success } from "@/lib/result";
 import type { Store } from "@/lib/store";
 import { LIMITS, type Resolution, type Ticket } from "@/lib/types";
 import { readImage } from "@/lib/uploads";
@@ -24,6 +34,7 @@ import { appendHistory, appendMessage, systemMessage, toPrivate } from "@/lib/wo
 /** Image-store key suffix for the department's proof-of-fix photo. */
 const AFTER_PHOTO_SUFFIX = "-after";
 const NOT_FIXED_WARNING = " ⚠ AI check: the photo may not show the issue fixed.";
+const ALREADY_RESOLVED = "Already resolved.";
 
 type Verdict = { verdict: Resolution["aiVerdict"]; reason: string };
 
@@ -38,6 +49,18 @@ async function checkFix(db: Store, ticket: Ticket, afterPhoto: MediaPart | null)
   });
 }
 
+/** The ticket closed as fixed: proof recorded, public timeline updated, citizen asked to confirm. */
+function markResolved(ticket: Ticket, resolution: Resolution, summary: string): Ticket {
+  const { at: now } = resolution;
+  return appendMessage(
+    appendHistory(
+      { ...ticket, status: "Resolved", resolvedAt: now, updatedAt: now, citizenConfirmation: "pending", resolution },
+      { status: "Resolved", at: now, note: summary },
+    ),
+    systemMessage(`${summary} Please confirm the fix or reopen the issue.`, now),
+  );
+}
+
 /** Mark a ticket fixed, with a note and an after-photo that Gemini checks against the original report. */
 export async function POST(req: Request, ctx: RouteContext<"/api/tickets/[id]/resolve">) {
   const { id } = await ctx.params;
@@ -45,7 +68,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/tickets/[id]/re
   const access = await loadTicketForStaff(req, id);
   if (!access.ok) return failWith(access);
   const { ticket, role, db } = access;
-  if (ticket.status === "Resolved") return fail(409, "Already resolved.");
+  if (ticket.status === "Resolved") return fail(409, ALREADY_RESOLVED);
 
   const form = await readFormData(req);
   if (!form) return fail(400, ERROR_MESSAGES.expectedFormData);
@@ -64,28 +87,23 @@ export async function POST(req: Request, ctx: RouteContext<"/api/tickets/[id]/re
   if (afterPhoto) await db.putImage(`${ticket.id}${AFTER_PHOTO_SUFFIX}`, afterPhoto);
 
   const summary = `${resolvedBy} reports this is fixed: ${note}${verdict === "not_fixed" ? NOT_FIXED_WARNING : ""}`;
-  const resolved: Ticket = appendMessage(
-    appendHistory(
-      {
-        ...ticket,
-        status: "Resolved",
-        resolvedAt: now,
-        updatedAt: now,
-        citizenConfirmation: "pending",
-        resolution: {
-          note,
-          hasPhoto: Boolean(afterPhoto),
-          aiVerdict: verdict,
-          aiReason: reason,
-          by: resolvedBy,
-          at: now,
-        },
-      },
-      { status: "Resolved", at: now, note: summary },
-    ),
-    systemMessage(`${summary} Please confirm the fix or reopen the issue.`, now),
-  );
-  await db.put(resolved);
+  const resolution: Resolution = {
+    note,
+    hasPhoto: Boolean(afterPhoto),
+    aiVerdict: verdict,
+    aiReason: reason,
+    by: resolvedBy,
+    at: now,
+  };
+  // Saved against the latest stored version: if someone else resolved or transferred
+  // the ticket while Gemini was checking the photo, this request is refused instead.
+  const result = await updateTicketAtomically(db, ticket.id, (current) => {
+    if (!canActOn(role, current)) return failure(403, ERROR_MESSAGES.otherDepartment);
+    if (current.status === "Resolved") return failure(409, ALREADY_RESOLVED);
+    return success({ ticket: markResolved(current, resolution, summary) });
+  });
+  if (!result.ok) return failWith(result);
+  const resolved = result.ticket;
   log.info("ticket_resolved", { id: ticket.id, by: resolvedBy, aiVerdict: verdict });
   await notifyReporters(
     resolved,

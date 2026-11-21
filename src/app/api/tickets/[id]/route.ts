@@ -29,10 +29,12 @@ import {
   failWith,
   loadTicketForStaff,
   readJsonBody,
+  updateTicketAtomically,
 } from "@/lib/http";
 import { log } from "@/lib/log";
 import { notifyReporters } from "@/lib/notify";
 import { parseTicketAction } from "@/lib/schemas";
+import { failure } from "@/lib/result";
 import { applyTicketAction } from "@/lib/services/ticket-actions";
 import { store } from "@/lib/store";
 import { isHeld } from "@/lib/types";
@@ -63,12 +65,18 @@ export async function PATCH(req: Request, ctx: RouteContext<"/api/tickets/[id]">
   const action = parseTicketAction(await readJsonBody(req));
   if (!action) return fail(400, "Unknown action.");
 
-  const result = applyTicketAction(ticket, action, { role, now: new Date().toISOString() });
+  // The action is applied to the latest stored version inside an atomic update, and
+  // permission is re-checked there in case the ticket was transferred meanwhile.
+  const context = { role, now: new Date().toISOString() };
+  const result = await updateTicketAtomically(db, ticket.id, (current) =>
+    canActOn(role, current)
+      ? applyTicketAction(current, action, context)
+      : failure(403, ERROR_MESSAGES.otherDepartment),
+  );
   if (!result.ok) return failWith(result);
   const { ticket: updated, notice, audit } = result;
 
   if (audit) log.info(audit.event, audit.fields);
-  await db.put(updated);
   if (notice) await notifyReporters(updated, notice.subject, notice.text, baseUrl(req));
   return NextResponse.json(toPrivate(updated));
 }

@@ -290,9 +290,12 @@ export async function mergeIntoDuplicate(
   existing: Ticket,
   merge: { reporter: Reporter; reason: string; image: MediaPart | null; now: string; aiSource: Triage["source"] },
 ): Promise<Ticket> {
-  const merged = withAdditionalReporter(existing, { ...merge, hasNewImage: Boolean(merge.image) });
   if (merge.image && !existing.hasImage) await db.putImage(existing.id, merge.image);
-  await db.put(merged);
+  // Applied to the latest stored version, so a reporter merged at the same moment is never lost.
+  const merged = await db.update(existing.id, (current) =>
+    withAdditionalReporter(current, { ...merge, hasNewImage: Boolean(merge.image) }),
+  );
+  if (!merged) throw new Error(`Ticket ${existing.id} disappeared while merging a duplicate report.`);
   log.info("ticket_merged", { id: merged.id, reporterCount: merged.reporterCount, aiSource: merge.aiSource });
   return merged;
 }
@@ -372,10 +375,9 @@ export function receiptText(ticket: Ticket, verified: boolean): string {
 
 /** Save a new ticket (routed to its department's queue, or held for review) and acknowledge it by email. */
 export async function createTicket(db: Store, input: Omit<NewTicketInput, "id">, origin: string): Promise<Ticket> {
-  const ticket = buildTicket({ ...input, id: await db.nextId() });
+  const ticket = await db.create((id) => buildTicket({ ...input, id }));
   // Images are stored separately so list queries stay small and fast.
   if (input.report.image) await db.putImage(ticket.id, input.report.image);
-  await db.put(ticket);
   // Logs carry only IDs and labels, never the citizen's text, photo, email or location.
   log.info("ticket_created", {
     id: ticket.id,

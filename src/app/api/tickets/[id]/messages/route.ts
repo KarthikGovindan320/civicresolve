@@ -52,11 +52,10 @@ export async function POST(req: Request, ctx: RouteContext<"/api/tickets/[id]/me
   const targetLanguage = fromStaff ? ticket.originalLanguage || STAFF_LANGUAGE : STAFF_LANGUAGE;
   const { detectedLanguage, translation } = await translateMessage(text, targetLanguage);
   const now = new Date().toISOString();
-  const updated = appendMessage(
-    { ...ticket, updatedAt: now },
-    makeMessage({ from: author, text, lang: detectedLanguage, translation }, now),
-  );
-  await db.put(updated);
+  const message = makeMessage({ from: author, text, lang: detectedLanguage, translation }, now);
+  // Appended to the latest stored version, so two messages sent at once are both kept.
+  const updated = await db.update(ticket.id, (current) => appendMessage({ ...current, updatedAt: now }, message));
+  if (!updated) return fail(404, ERROR_MESSAGES.ticketNotFound);
   if (fromStaff) {
     // Email relay: the citizen gets the message (and its translation) by email.
     const emailBody = translation ? `${text}\n\n${translation}` : text;

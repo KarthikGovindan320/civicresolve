@@ -94,3 +94,22 @@ export async function loadTicketForReporter(req: Request, id: string): Promise<R
   if (!isReporter(ticket, req.headers.get(CITIZEN_KEY_HEADER))) return failure(403, ERROR_MESSAGES.notYourTicket);
   return { ok: true, ticket, db };
 }
+
+/**
+ * Decide a change against the latest stored version of a ticket and save it in
+ * one atomic step (see `Store.update`). `decide` returns the outcome the route
+ * answers with; on success its `ticket` is what gets saved, on failure nothing
+ * is. It may run more than once under contention, so it must be pure.
+ */
+export async function updateTicketAtomically<Outcome extends Result<{ ticket: Ticket }>>(
+  db: Store,
+  id: string,
+  decide: (current: Ticket) => Outcome,
+): Promise<Outcome | Failure> {
+  const last: { outcome?: Outcome } = {};
+  await db.update(id, (current) => {
+    last.outcome = decide(current);
+    return last.outcome.ok ? last.outcome.ticket : null;
+  });
+  return last.outcome ?? failure(404, ERROR_MESSAGES.ticketNotFound);
+}
