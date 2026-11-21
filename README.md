@@ -10,9 +10,33 @@ AI-powered civic issue reporting **and resolution**. Citizens report potholes, g
 | `/` Report | Type a vague report ("Problem on our road"), attach a photo, search a landmark (e.g. "Vellore Fort") or tap the map, then submit. The phone check shows a **demo code on screen** (SMS gateway not connected yet): enter it and Gemini returns category, priority + reason, department and an English summary in a few seconds. Keep the private link it gives you. |
 | `/track` | Public dashboard: open/critical/overdue counts, per-department on-time rate, city map with every issue, filters. |
 | `/track/<id>?k=…` | The citizen's private page: anonymous chat with the department (write in Tamil or Hindi: Gemini translates), before/after photos with Gemini's verdict, "Yes, it's fixed" / "Not fixed: reopen". |
-| `/staff` | Department and city-admin portal (production passcodes are supplied with the submission; the dev passcodes below only work locally). |
+| `/staff` | Department and city-admin portal: sign in with a passcode below. A department sees only its own queue; the admin sees everything, including the review queue for unverified reports. |
 
 Verified end to end on the live deployment (Gemini calls included): photo + text classification, a Tamil duplicate report merged into an English one, a "sparking wire near a bus stop" report forced to Critical by the safety rules, Tamil ↔ English message translation, before/after verification ("fixed" for a real repair, "unclear" for an unrelated photo), reopen and confirm, transfer, the admin review queue for unverified reports, and 401/403 for every unauthorised action.
+
+### Staff passcodes for the live demo (judges)
+| Role | Passcode |
+|---|---|
+| **City admin** (all departments, escalations, review queue, AI overrides) | `admin-9ajtynp1` |
+| Public Works (Roads) | `roads-t1stril5` |
+| Sanitation | `sanitation-towq1fnp` |
+| Electricity Board (TANGEDCO) | `electricity-jejl43zh` |
+| Water Supply | `water-l85yq4tf` |
+| Drainage & Sewerage | `drainage-69bgl1o2` |
+| General Administration | `general-6gdccawl` |
+
+Try signing in as one department and opening another department's ticket: the server refuses it (403).
+
+### At a glance: the judging criteria
+| Criterion | What CivicResolve does |
+|---|---|
+| **Problem statement alignment** | Every required feature (reporting, Gemini classification, priority detection, department recommendation, tracking dashboard, admin dashboard) **plus** a full resolution loop: accept with a promised date, anonymous translated chat, fixes accepted only with a Gemini-checked after photo, citizen confirm/reopen, SLA deadlines with escalation. |
+| **Google services** | Gemini (multimodal triage, duplicate detection, translation, before/after verification) · Cloud Run · Firestore · Cloud Build · Artifact Registry · Secret Manager · Cloud Logging · Places API (New) integrated. |
+| **Security** | Server-enforced per-department access, HMAC private links (never stored), OTP anti-spam with numbers that stay private, review queue for unverified reports, rate limits, file-signature upload checks, CSP + security headers, secrets in Secret Manager. |
+| **Testing** | 80 automated Vitest tests including the full API lifecycle, plus an end-to-end run on the live deployment with real Gemini calls. |
+| **Accessibility** | Labelled controls, keyboard-operable map and address search (WAI-ARIA combobox), screen-reader announcements, voice reports in any language, text alongside every colour. |
+| **Efficiency** | One Gemini call per report, lightest model for short tasks, no cron jobs (deadlines computed on read), photos downscaled in the browser, small standalone container. |
+| **Code quality** | TypeScript strict, one shared domain model, schema-validated AI output, lint and typecheck clean, comments tagged by criterion. |
 
 ## The workflow
 ```
